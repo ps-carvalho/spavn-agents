@@ -1,0 +1,468 @@
+// ---------------------------------------------------------------------------
+// Spavn Engine — Seed / Import module
+// Reads .opencode/ agent and skill markdown files and imports them into SQLite.
+// ---------------------------------------------------------------------------
+
+import * as fs from "fs";
+import * as path from "path";
+import type Database from "better-sqlite3";
+import { AgentStore } from "./agents.js";
+import { SkillStore } from "./skills.js";
+import { ModelStore } from "./models.js";
+import { TargetStore } from "./targets.js";
+import { MODEL_REGISTRY } from "../registry.js";
+import type { AgentMode, PermissionLevel } from "./types.js";
+
+// ---- Public interface ------------------------------------------------------
+
+export interface SeedResult {
+  agents: number;
+  skills: number;
+  models: number;
+  targets: number;
+}
+
+/**
+ * Populate the database from .opencode/ markdown files and static registries.
+ * All operations are idempotent (INSERT OR REPLACE) and wrapped in a single
+ * transaction for atomicity.
+ */
+export function seedDatabase(db: Database.Database, opencodeDir: string): SeedResult {
+  const agents = new AgentStore(db);
+  const skills = new SkillStore(db);
+  const models = new ModelStore(db);
+  const targets = new TargetStore(db);
+
+  const result: SeedResult = { agents: 0, skills: 0, models: 0, targets: 0 };
+
+  const run = db.transaction(() => {
+    result.agents = seedAgents(agents, opencodeDir);
+    result.skills = seedSkills(skills, opencodeDir);
+    result.models = seedModels(models);
+    result.targets = seedTargets(targets);
+    seedAgentTargetConfigs(agents, targets, opencodeDir);
+  });
+
+  run();
+  return result;
+}
+
+// ---- Agent seeding ---------------------------------------------------------
+
+/** Claude Code native tool name mapping from opencode short names. */
+const CLAUDE_NATIVE_TOOLS: Record<string, string> = {
+  read: "Read",
+  write: "Write",
+  edit: "Edit",
+  bash: "Bash",
+  glob: "Glob",
+  grep: "Grep",
+};
+
+/** Gemini CLI native tool name mapping from opencode short names. */
+const GEMINI_NATIVE_TOOLS: Record<string, string> = {
+  read: "read_file",
+  write: "write_file",
+  edit: "edit_file",
+  bash: "run_shell_command",
+  glob: "glob_tool",
+  grep: "grep_search",
+};
+
+/** MCP tool prefix for spavn-agents tools exposed via MCP (Claude uses __). */
+const MCP_PREFIX = "mcp__spavn-agents__";
+
+/** MCP tool prefix for spavn-agents tools exposed via MCP (Gemini uses _). */
+const MCP_PREFIX_GEMINI = "mcp_spavn-agents_";
+
+function seedAgents(store: AgentStore, opencodeDir: string): number {
+  const agentsDir = path.join(opencodeDir, "agents");
+  if (!fs.existsSync(agentsDir)) return 0;
+
+  const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+  let count = 0;
+
+  for (const file of files) {
+    const id = file.replace(/\.md$/, "");
+    const raw = fs.readFileSync(path.join(agentsDir, file), "utf-8");
+    const parsed = parseFrontmatter(raw);
+
+    if (!parsed) continue;
+
+    const { frontmatter, body } = parsed;
+
+    store.upsert({
+      id,
+      description: (frontmatter.description as string) ?? "",
+      mode: (frontmatter.mode as AgentMode) ?? "subagent",
+      temperature: parseFloat(String(frontmatter.temperature ?? "0")),
+      system_prompt: body.trim(),
+    });
+
+    // -- Tools --
+    const tools = frontmatter.tools as Record<string, unknown> | undefined;
+    if (tools && typeof tools === "object") {
+      const toolMap: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(tools)) {
+        toolMap[k] = v === true || v === "true";
+      }
+      store.setTools(id, toolMap);
+    }
+
+    // -- Bash permissions --
+    const permission = frontmatter.permission as
+      | Record<string, unknown>
+      | undefined;
+    if (permission && typeof permission === "object") {
+      const bashPerms: Record<string, string> = {};
+
+      // edit permission → stored as a bash permission with pattern "__edit__"
+      if (permission.edit !== undefined) {
+        bashPerms["__edit__"] = String(permission.edit) as PermissionLevel;
+      }
+
+      const bash = permission.bash;
+      if (typeof bash === "string") {
+        // Simple string value: all patterns get this permission (e.g. "deny", "ask")
+        bashPerms["*"] = bash;
+      } else if (bash && typeof bash === "object") {
+        // Record<pattern, permission>
+        for (const [pattern, perm] of Object.entries(
+          bash as Record<string, unknown>,
+        )) {
+          bashPerms[pattern] = String(perm);
+        }
+      }
+
+      if (Object.keys(bashPerms).length > 0) {
+        store.setBashPermissions(id, bashPerms);
+      }
+    }
+
+    count++;
+  }
+
+  return count;
+}
+
+// ---- Skill seeding ---------------------------------------------------------
+
+function seedSkills(store: SkillStore, opencodeDir: string): number {
+  const skillsDir = path.join(opencodeDir, "skills");
+  if (!fs.existsSync(skillsDir)) return 0;
+
+  const dirs = fs
+    .readdirSync(skillsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory());
+
+  let count = 0;
+
+  for (const dir of dirs) {
+    const skillFile = path.join(skillsDir, dir.name, "SKILL.md");
+    if (!fs.existsSync(skillFile)) continue;
+
+    const raw = fs.readFileSync(skillFile, "utf-8");
+    const parsed = parseFrontmatter(raw);
+
+    // Skills are served as-is, so content is the full file
+    store.upsert({
+      id: dir.name,
+      name: parsed?.frontmatter.name
+        ? String(parsed.frontmatter.name)
+        : dir.name,
+      description: parsed?.frontmatter.description
+        ? String(parsed.frontmatter.description)
+        : null,
+      content: raw,
+    });
+
+    count++;
+  }
+
+  return count;
+}
+
+// ---- Model seeding ---------------------------------------------------------
+
+function seedModels(store: ModelStore): number {
+  for (const entry of MODEL_REGISTRY) {
+    store.upsert({
+      id: entry.id,
+      name: entry.name,
+      provider: entry.provider,
+      tier: entry.tier,
+      description: entry.description,
+    });
+  }
+  return MODEL_REGISTRY.length;
+}
+
+// ---- Target seeding --------------------------------------------------------
+
+const BUILTIN_TARGETS = [
+  {
+    id: "claude",
+    display_name: "Claude Code",
+    config_dir: "~/.claude",
+    agent_file_format: "claude_md",
+    instructions_file: "CLAUDE.md",
+  },
+  {
+    id: "opencode",
+    display_name: "OpenCode",
+    config_dir: "~/.config/opencode",
+    agent_file_format: "opencode_md",
+    instructions_file: null,
+  },
+  {
+    id: "codex",
+    display_name: "Codex CLI",
+    config_dir: "~/.codex",
+    agent_file_format: "codex_md",
+    instructions_file: "agents/AGENTS.md",
+  },
+  {
+    id: "gemini",
+    display_name: "Gemini CLI",
+    config_dir: "~/.gemini",
+    agent_file_format: "gemini_md",
+    instructions_file: "GEMINI.md",
+  },
+] as const;
+
+function seedTargets(store: TargetStore): number {
+  for (const target of BUILTIN_TARGETS) {
+    store.upsertTarget({
+      id: target.id,
+      display_name: target.display_name,
+      config_dir: target.config_dir,
+      agent_file_format: target.agent_file_format,
+      instructions_file: target.instructions_file,
+    });
+  }
+  return BUILTIN_TARGETS.length;
+}
+
+// ---- Agent-target config seeding (Claude + Gemini) -------------------------
+
+function seedAgentTargetConfigs(
+  agentStore: AgentStore,
+  targetStore: TargetStore,
+  opencodeDir: string,
+): void {
+  const agentsDir = path.join(opencodeDir, "agents");
+  if (!fs.existsSync(agentsDir)) return;
+
+  const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+
+  for (const file of files) {
+    const agentId = file.replace(/\.md$/, "");
+    const raw = fs.readFileSync(path.join(agentsDir, file), "utf-8");
+    const parsed = parseFrontmatter(raw);
+    if (!parsed) continue;
+
+    const tools = (parsed.frontmatter.tools as Record<string, unknown>) ?? {};
+
+    // ---- Claude target config ----
+    {
+      const toolsOverride: string[] = [];
+      const disallowedTools: string[] = [];
+
+      for (const [toolName, allowed] of Object.entries(tools)) {
+        const isAllowed = allowed === true || allowed === "true";
+        const claudeName = CLAUDE_NATIVE_TOOLS[toolName];
+
+        if (claudeName) {
+          if (isAllowed) {
+            toolsOverride.push(claudeName);
+          } else {
+            disallowedTools.push(claudeName);
+          }
+        } else {
+          if (isAllowed) {
+            toolsOverride.push(`${MCP_PREFIX}${toolName}`);
+          }
+        }
+      }
+
+      targetStore.upsertAgentTargetConfig({
+        agent_id: agentId,
+        target_id: "claude",
+        native_name: null,
+        tools_override: toolsOverride.length > 0 ? toolsOverride : null,
+        disallowed_tools: disallowedTools.length > 0 ? disallowedTools : null,
+        model_override: "inherit",
+        extra_frontmatter: { mcpServers: "spavn-agents" },
+      });
+    }
+
+    // ---- Gemini target config ----
+    {
+      const toolsOverride: string[] = [];
+
+      for (const [toolName, allowed] of Object.entries(tools)) {
+        const isAllowed = allowed === true || allowed === "true";
+        if (!isAllowed) continue;
+
+        const geminiName = GEMINI_NATIVE_TOOLS[toolName];
+        if (geminiName) {
+          toolsOverride.push(geminiName);
+        } else {
+          toolsOverride.push(`${MCP_PREFIX_GEMINI}${toolName}`);
+        }
+      }
+
+      targetStore.upsertAgentTargetConfig({
+        agent_id: agentId,
+        target_id: "gemini",
+        native_name: null,
+        tools_override: toolsOverride.length > 0 ? toolsOverride : null,
+        disallowed_tools: null,
+        model_override: null,
+        extra_frontmatter: null,
+      });
+    }
+  }
+}
+
+// ---- Simple YAML frontmatter parser ----------------------------------------
+
+interface ParsedFrontmatter {
+  frontmatter: Record<string, unknown>;
+  body: string;
+}
+
+/**
+ * Parse YAML-like frontmatter delimited by `---`.
+ * Handles:
+ *   - Top-level key: value pairs
+ *   - Nested objects via indentation (one level deep)
+ *   - Boolean (true/false), number, and string values
+ *   - Comments (lines starting with #)
+ *
+ * This is intentionally minimal to avoid a YAML library dependency.
+ */
+function parseFrontmatter(content: string): ParsedFrontmatter | null {
+  const trimmed = content.trimStart();
+  if (!trimmed.startsWith("---")) return null;
+
+  // Find the closing --- delimiter
+  const afterFirst = trimmed.indexOf("\n");
+  if (afterFirst === -1) return null;
+
+  const rest = trimmed.slice(afterFirst + 1);
+  const closingIdx = rest.indexOf("\n---");
+  if (closingIdx === -1) return null;
+
+  const frontmatterStr = rest.slice(0, closingIdx);
+  const body = rest.slice(closingIdx + 4); // skip past "\n---"
+
+  const result: Record<string, unknown> = {};
+  const lines = frontmatterStr.split("\n");
+
+  // Track up to 3 levels: top (indent 0), level1 (indent 2), level2 (indent 4+)
+  let l0Key: string | null = null;
+  let l0Obj: Record<string, unknown> | null = null;
+  let l1Key: string | null = null;
+  let l1Obj: Record<string, unknown> | null = null;
+
+  for (const line of lines) {
+    // Skip empty lines and comments
+    if (line.trim() === "" || line.trim().startsWith("#")) continue;
+
+    const indent = line.length - line.trimStart().length;
+    const kv = line.trim().match(/^([^:]+):\s*(.*)$/);
+    if (!kv) continue;
+
+    const rawKey = kv[1].trim();
+    // Strip surrounding quotes from key (e.g., "git status*" → git status*)
+    const key = (rawKey.startsWith('"') && rawKey.endsWith('"'))
+      || (rawKey.startsWith("'") && rawKey.endsWith("'"))
+      ? rawKey.slice(1, -1)
+      : rawKey;
+    const val = kv[2].trim();
+
+    if (indent === 0) {
+      // Top-level key
+      l1Key = null;
+      l1Obj = null;
+      if (val === "") {
+        l0Key = key;
+        l0Obj = null; // will be created on first nested line
+      } else {
+        l0Key = key;
+        l0Obj = null;
+        result[key] = parseScalar(val);
+      }
+    } else if (indent >= 2 && indent < 4 && l0Key !== null) {
+      // Level 1 nested (2 spaces) — belongs to l0Key
+      l1Key = null;
+      l1Obj = null;
+      if (l0Obj === null) {
+        l0Obj = {};
+        result[l0Key] = l0Obj;
+      }
+      if (val === "") {
+        l1Key = key;
+        l1Obj = null;
+      } else {
+        l1Key = key;
+        l1Obj = null;
+        l0Obj[key] = parseScalar(val);
+      }
+    } else if (indent >= 4 && l0Key !== null && l1Key !== null) {
+      // Level 2 nested (4+ spaces) — belongs to l1Key within l0Key
+      if (l0Obj === null) {
+        l0Obj = {};
+        result[l0Key] = l0Obj;
+      }
+      if (l1Obj === null) {
+        l1Obj = {};
+        l0Obj[l1Key] = l1Obj;
+      }
+      l1Obj[key] = parseScalar(val);
+    } else if (indent >= 2 && l0Key !== null) {
+      // Fallback for deeper nesting without l1Key
+      if (l0Obj === null) {
+        l0Obj = {};
+        result[l0Key] = l0Obj;
+      }
+      l0Obj[key] = parseScalar(val);
+    }
+  }
+
+  return { frontmatter: result, body };
+}
+
+/**
+ * Parse a scalar value from a YAML-like string.
+ * Returns boolean, number, or string.
+ */
+function parseScalar(val: string): boolean | number | string {
+  // Remove surrounding quotes if present
+  if (
+    (val.startsWith('"') && val.endsWith('"')) ||
+    (val.startsWith("'") && val.endsWith("'"))
+  ) {
+    return val.slice(1, -1);
+  }
+
+  // Booleans
+  if (val === "true") return true;
+  if (val === "false") return false;
+
+  // Null
+  if (val === "null" || val === "~") return "";
+
+  // Numbers
+  const num = Number(val);
+  if (!Number.isNaN(num) && val !== "") return num;
+
+  // Strip inline comments: "value # comment" -> "value"
+  const commentIdx = val.indexOf(" #");
+  if (commentIdx !== -1) {
+    return parseScalar(val.slice(0, commentIdx).trim());
+  }
+
+  return val;
+}
