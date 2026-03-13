@@ -26,8 +26,9 @@ const NATIVE_TOOL_MAP: Record<string, string> = {
   bash: "Bash",
   glob: "Glob",
   grep: "Grep",
-  skill: "Skill",
   task: "Agent",
+  // Note: `skill` is NOT mapped here — it's an MCP tool (mcp__spavn-agents__skill),
+  // not Claude's native Skill tool which only handles slash commands.
 };
 
 const NATIVE_TOOL_NAMES = new Set(Object.keys(NATIVE_TOOL_MAP));

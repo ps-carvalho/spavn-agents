@@ -413,6 +413,45 @@ export async function startMCPServer(): Promise<void> {
     },
   );
 
+  // ─── Skill tools ─────────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "skill",
+    "Load a spavn skill by name. Skills provide specialized domain knowledge (e.g. frontend-development, ui-design, api-design, database-design, etc.)",
+    {
+      name: z.string().describe("Skill name to load (e.g. frontend-development, ui-design, api-design)"),
+    },
+    async ({ name: skillName }) => {
+      // Look for skills in the bundled .opencode/skills/ directory
+      const skillPaths = [
+        path.resolve(__dirname, "..", ".opencode", "skills", skillName, "SKILL.md"),
+        path.join(worktree, ".opencode", "skills", skillName, "SKILL.md"),
+      ];
+
+      for (const skillPath of skillPaths) {
+        if (fs.existsSync(skillPath)) {
+          try {
+            const content = fs.readFileSync(skillPath, "utf-8");
+            return ok(`✓ Skill loaded: ${skillName}\n\n${content}`);
+          } catch (error) {
+            return err(error);
+          }
+        }
+      }
+
+      // List available skills for helpful error
+      const bundledSkillsDir = path.resolve(__dirname, "..", ".opencode", "skills");
+      let available: string[] = [];
+      if (fs.existsSync(bundledSkillsDir)) {
+        available = fs.readdirSync(bundledSkillsDir).filter((d) =>
+          fs.existsSync(path.join(bundledSkillsDir, d, "SKILL.md")),
+        );
+      }
+
+      return ok(`✗ Skill not found: ${skillName}\n\nAvailable skills: ${available.join(", ")}`);
+    },
+  );
+
   // ─── GitHub tools ───────────────────────────────────────────────────────────
 
   mcpServer.tool(
