@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
@@ -23,59 +24,67 @@ interface ToolContext {
   directory?: string;
 }
 
-// ─── Tool Handler Interface ───────────────────────────────────────────────────
+// ─── MCP Server ──────────────────────────────────────────────────────────────
 
-interface ToolHandler {
-  (args: Record<string, unknown>, context: ToolContext): Promise<string>;
-}
+export async function startMCPServer(): Promise<void> {
+  const mcpServer = new McpServer({
+    name: "spavn-agents",
+    version: VERSION,
+  });
 
-interface ToolSpec {
-  description: string;
-  inputSchema: Record<string, unknown>;
-  handler: ToolHandler;
-}
+  // Get the current working directory as the worktree root
+  const worktree = process.cwd();
 
-// ─── Tool Implementations ─────────────────────────────────────────────────────
-// These are stub implementations that demonstrate MCP functionality
-// In production, they would wrap the actual tool implementations from src/tools/
+  function ctx(): ToolContext {
+    return {
+      worktree,
+      directory: worktree,
+      sessionID: "mcp-session",
+      messageID: "mcp-message",
+      agent: "mcp",
+    };
+  }
 
-const TOOL_REGISTRY: Record<string, ToolSpec> = {
-  // Spavn tools
-  spavn_init: {
-    description: "Initialize .spavn directory in project root for plan storage, session history, and configuration",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
-      const spavnPath = path.join(context.worktree, ".spavn");
+  function ok(text: string) {
+    return { content: [{ type: "text" as const, text }] };
+  }
+
+  function err(error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true as const };
+  }
+
+  // ─── Spavn tools ────────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "spavn_init",
+    "Initialize .spavn directory in project root for plan storage, session history, and configuration",
+    {},
+    async () => {
+      const spavnPath = path.join(worktree, ".spavn");
       try {
         if (!fs.existsSync(spavnPath)) {
           fs.mkdirSync(spavnPath, { recursive: true });
           fs.mkdirSync(path.join(spavnPath, "plans"), { recursive: true });
           fs.mkdirSync(path.join(spavnPath, "sessions"), { recursive: true });
-          return `✓ Initialized .spavn directory at ${spavnPath}`;
+          return ok(`✓ Initialized .spavn directory at ${spavnPath}`);
         } else {
-          return `✓ .spavn directory already exists at ${spavnPath}`;
+          return ok(`✓ .spavn directory already exists at ${spavnPath}`);
         }
       } catch (error) {
-        return `✗ Error initializing .spavn: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  spavn_status: {
-    description: "Check .spavn directory status - whether it exists, plan count, session count",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
-      const spavnPath = path.join(context.worktree, ".spavn");
+  mcpServer.tool(
+    "spavn_status",
+    "Check .spavn directory status - whether it exists, plan count, session count",
+    {},
+    async () => {
+      const spavnPath = path.join(worktree, ".spavn");
       if (!fs.existsSync(spavnPath)) {
-        return `✗ .spavn directory not found at ${spavnPath}\n\nRun spavn_init to initialize.`;
+        return ok(`✗ .spavn directory not found at ${spavnPath}\n\nRun spavn_init to initialize.`);
       }
 
       const plansPath = path.join(spavnPath, "plans");
@@ -88,353 +97,262 @@ const TOOL_REGISTRY: Record<string, ToolSpec> = {
         ? fs.readdirSync(sessionsPath).filter((f) => f.endsWith(".md")).length
         : 0;
 
-      return `✓ .spavn directory status
+      return ok(`✓ .spavn directory status\n\nLocation: ${spavnPath}\nPlans: ${planCount}\nSessions: ${sessionCount}`);
+    },
+  );
 
-Location: ${spavnPath}
-Plans: ${planCount}
-Sessions: ${sessionCount}`;
+  mcpServer.tool(
+    "spavn_configure",
+    "Configure AI models for this project (primary agents and subagents)",
+    {
+      scope: z.enum(["project", "global"]).describe("Configuration scope: project-specific or global"),
+      primaryModel: z.string().describe("Model ID for primary agents"),
+      subagentModel: z.string().describe("Model ID for subagents"),
     },
-  },
+    async ({ scope, primaryModel, subagentModel }) => {
+      return ok(`✓ Configured models\n\nScope: ${scope}\nPrimary: ${primaryModel}\nSubagent: ${subagentModel}`);
+    },
+  );
 
-  spavn_configure: {
-    description: "Configure AI models for this project (primary agents and subagents)",
-    inputSchema: {
-      type: "object",
-      properties: {
-        scope: {
-          type: "string",
-          enum: ["project", "global"],
-          description: "Configuration scope: project-specific or global",
-        },
-        primaryModel: {
-          type: "string",
-          description: "Model ID for primary agents",
-        },
-        subagentModel: {
-          type: "string",
-          description: "Model ID for subagents",
-        },
-      },
-      required: ["scope", "primaryModel", "subagentModel"],
-    },
-    handler: async (args) => {
-      return `✓ Configured models\n\nScope: ${args.scope}\nPrimary: ${args.primaryModel}\nSubagent: ${args.subagentModel}`;
-    },
-  },
+  // ─── Worktree tools ─────────────────────────────────────────────────────────
 
-  // Worktree tools
-  worktree_list: {
-    description: "List all git worktrees for the repository",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
+  mcpServer.tool(
+    "worktree_list",
+    "List all git worktrees for the repository",
+    {},
+    async () => {
       try {
-        const result = await exec("git", ["worktree", "list"], { cwd: context.worktree, nothrow: true });
+        const result = await exec("git", ["worktree", "list"], { cwd: worktree, nothrow: true });
         if (result.exitCode === 0) {
-          return `✓ Git worktrees:\n\n${result.stdout}`;
+          return ok(`✓ Git worktrees:\n\n${result.stdout}`);
         } else {
-          return `✗ Not a git repository or git worktree list failed`;
+          return ok(`✗ Not a git repository or git worktree list failed`);
         }
       } catch (error) {
-        return `✗ Error listing worktrees: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  worktree_open: {
-    description: "Open a git worktree in the default editor or file explorer",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: {
-          type: "string",
-          description: "Worktree name to open",
-        },
-      },
-      required: ["name"],
+  mcpServer.tool(
+    "worktree_open",
+    "Open a git worktree in the default editor or file explorer",
+    {
+      name: z.string().describe("Worktree name to open"),
     },
-    handler: async (args, context) => {
-      const worktreeName = args.name as string;
-      const worktreePath = path.join(context.worktree, "..", worktreeName);
+    async ({ name: worktreeName }) => {
+      const worktreePath = path.join(worktree, "..", worktreeName);
       if (fs.existsSync(worktreePath)) {
-        return `✓ Worktree path: ${worktreePath}`;
+        return ok(`✓ Worktree path: ${worktreePath}`);
       } else {
-        return `✗ Worktree not found at ${worktreePath}`;
+        return ok(`✗ Worktree not found at ${worktreePath}`);
       }
     },
-  },
+  );
 
-  // Branch tools
-  branch_status: {
-    description: "Get current git branch status",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
+  // ─── Branch tools ───────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "branch_status",
+    "Get current git branch status",
+    {},
+    async () => {
       try {
-        const result = await exec("git", ["branch", "--show-current"], { cwd: context.worktree, nothrow: true });
+        const result = await exec("git", ["branch", "--show-current"], { cwd: worktree, nothrow: true });
         if (result.exitCode === 0) {
           const branch = result.stdout.trim();
-          return `✓ Current branch: ${branch}`;
+          return ok(`✓ Current branch: ${branch}`);
         } else {
-          return `✗ Failed to get branch status`;
+          return ok(`✗ Failed to get branch status`);
         }
       } catch (error) {
-        return `✗ Error: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  branch_switch: {
-    description: "Switch to an existing git branch",
-    inputSchema: {
-      type: "object",
-      properties: {
-        branch: {
-          type: "string",
-          description: "Branch name to switch to",
-        },
-      },
-      required: ["branch"],
+  mcpServer.tool(
+    "branch_switch",
+    "Switch to an existing git branch",
+    {
+      branch: z.string().describe("Branch name to switch to"),
     },
-    handler: async (args, context) => {
-      const branch = args.branch as string;
+    async ({ branch }) => {
       try {
-        const result = await exec("git", ["checkout", branch], { cwd: context.worktree, nothrow: true });
+        const result = await exec("git", ["checkout", branch], { cwd: worktree, nothrow: true });
         if (result.exitCode === 0) {
-          return `✓ Switched to branch: ${branch}`;
+          return ok(`✓ Switched to branch: ${branch}`);
         } else {
-          return `✗ Failed to switch branch: ${result.stderr}`;
+          return ok(`✗ Failed to switch branch: ${result.stderr}`);
         }
       } catch (error) {
-        return `✗ Error: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  // Plan tools
-  plan_list: {
-    description: "List all plans in .spavn/plans/ with preview",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Maximum number of plans to return",
-        },
-      },
-      required: [],
+  // ─── Plan tools ─────────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "plan_list",
+    "List all plans in .spavn/plans/ with preview",
+    {
+      limit: z.number().optional().describe("Maximum number of plans to return"),
     },
-    handler: async (args, context) => {
-      const plansPath = path.join(context.worktree, ".spavn", "plans");
+    async ({ limit: maxItems }) => {
+      const plansPath = path.join(worktree, ".spavn", "plans");
       if (!fs.existsSync(plansPath)) {
-        return `No plans found. Run spavn_init to initialize.`;
+        return ok(`No plans found. Run spavn_init to initialize.`);
       }
 
       const files = fs.readdirSync(plansPath).filter((f) => f.endsWith(".md")).sort().reverse();
-      const limit = (args.limit as number) || 10;
+      const limit = maxItems || 10;
       const limited = files.slice(0, Math.min(limit, files.length));
 
       if (limited.length === 0) {
-        return `No plans saved in .spavn/plans/`;
+        return ok(`No plans saved in .spavn/plans/`);
       }
 
       let output = `✓ Plans (showing ${limited.length}):\n\n`;
       for (const file of limited) {
         output += `  • ${file}\n`;
       }
-      return output;
+      return ok(output);
     },
-  },
+  );
 
-  plan_load: {
-    description: "Load a full plan by filename",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: {
-          type: "string",
-          description: "Plan filename from .spavn/plans/",
-        },
-      },
-      required: ["filename"],
+  mcpServer.tool(
+    "plan_load",
+    "Load a full plan by filename",
+    {
+      filename: z.string().describe("Plan filename from .spavn/plans/"),
     },
-    handler: async (args, context) => {
-      const filename = args.filename as string;
-      const filepath = path.join(context.worktree, ".spavn", "plans", filename);
+    async ({ filename }) => {
+      const filepath = path.join(worktree, ".spavn", "plans", filename);
 
       if (!fs.existsSync(filepath)) {
-        return `✗ Plan not found: ${filename}`;
+        return ok(`✗ Plan not found: ${filename}`);
       }
 
       try {
         const content = fs.readFileSync(filepath, "utf-8");
-        return `✓ Plan: ${filename}\n\n${content}`;
+        return ok(`✓ Plan: ${filename}\n\n${content}`);
       } catch (error) {
-        return `✗ Error loading plan: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  plan_save: {
-    description: "Save an implementation plan to .spavn/plans/ with mermaid diagram support",
-    inputSchema: {
-      type: "object",
-      properties: {
-        title: {
-          type: "string",
-          description: "Plan title",
-        },
-        type: {
-          type: "string",
-          enum: ["feature", "bugfix", "refactor", "architecture", "spike", "docs"],
-          description: "Plan type",
-        },
-        content: {
-          type: "string",
-          description: "Full plan content in markdown",
-        },
-      },
-      required: ["title", "type", "content"],
+  mcpServer.tool(
+    "plan_save",
+    "Save an implementation plan to .spavn/plans/ with mermaid diagram support",
+    {
+      title: z.string().describe("Plan title"),
+      type: z.enum(["feature", "bugfix", "refactor", "architecture", "spike", "docs"]).describe("Plan type"),
+      content: z.string().describe("Full plan content in markdown"),
     },
-    handler: async (args, context) => {
-      const { title, type, content } = args;
-      const plansPath = path.join(context.worktree, ".spavn", "plans");
+    async ({ title, type, content }) => {
+      const plansPath = path.join(worktree, ".spavn", "plans");
 
       try {
         fs.mkdirSync(plansPath, { recursive: true });
 
         const date = new Date().toISOString().split("T")[0];
-        const slug = (title as string).toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-");
+        const slug = title.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-");
         const filename = `${date}-${type}-${slug}.md`;
         const filepath = path.join(plansPath, filename);
 
         fs.writeFileSync(filepath, `# ${title}\n\n${content}`);
-        return `✓ Plan saved: ${filename}`;
+        return ok(`✓ Plan saved: ${filename}`);
       } catch (error) {
-        return `✗ Error saving plan: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  plan_delete: {
-    description: "Delete a plan file",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: {
-          type: "string",
-          description: "Plan filename to delete",
-        },
-      },
-      required: ["filename"],
+  mcpServer.tool(
+    "plan_delete",
+    "Delete a plan file",
+    {
+      filename: z.string().describe("Plan filename to delete"),
     },
-    handler: async (args, context) => {
-      const filename = args.filename as string;
-      const filepath = path.join(context.worktree, ".spavn", "plans", filename);
+    async ({ filename }) => {
+      const filepath = path.join(worktree, ".spavn", "plans", filename);
 
       if (!fs.existsSync(filepath)) {
-        return `✗ Plan not found: ${filename}`;
+        return ok(`✗ Plan not found: ${filename}`);
       }
 
       try {
         fs.unlinkSync(filepath);
-        return `✓ Deleted plan: ${filename}`;
+        return ok(`✓ Deleted plan: ${filename}`);
       } catch (error) {
-        return `✗ Error deleting plan: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  // Session tools
-  session_list: {
-    description: "List recent session summaries from .spavn/sessions/",
-    inputSchema: {
-      type: "object",
-      properties: {
-        limit: {
-          type: "number",
-          description: "Maximum number of sessions to return",
-        },
-      },
-      required: [],
+  // ─── Session tools ──────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "session_list",
+    "List recent session summaries from .spavn/sessions/",
+    {
+      limit: z.number().optional().describe("Maximum number of sessions to return"),
     },
-    handler: async (args, context) => {
-      const sessionsPath = path.join(context.worktree, ".spavn", "sessions");
+    async ({ limit: maxItems }) => {
+      const sessionsPath = path.join(worktree, ".spavn", "sessions");
       if (!fs.existsSync(sessionsPath)) {
-        return `No sessions found. Sessions are created when you use session_save.`;
+        return ok(`No sessions found. Sessions are created when you use session_save.`);
       }
 
       const files = fs.readdirSync(sessionsPath).filter((f) => f.endsWith(".md")).sort().reverse();
-      const limit = (args.limit as number) || 10;
+      const limit = maxItems || 10;
       const limited = files.slice(0, Math.min(limit, files.length));
 
       if (limited.length === 0) {
-        return `No session summaries found in .spavn/sessions/`;
+        return ok(`No session summaries found in .spavn/sessions/`);
       }
 
       let output = `✓ Recent Sessions (showing ${limited.length}):\n\n`;
       for (const file of limited) {
         output += `  • ${file}\n`;
       }
-      return output;
+      return ok(output);
     },
-  },
+  );
 
-  session_load: {
-    description: "Load a session summary by filename",
-    inputSchema: {
-      type: "object",
-      properties: {
-        filename: {
-          type: "string",
-          description: "Session filename",
-        },
-      },
-      required: ["filename"],
+  mcpServer.tool(
+    "session_load",
+    "Load a session summary by filename",
+    {
+      filename: z.string().describe("Session filename"),
     },
-    handler: async (args, context) => {
-      const filename = args.filename as string;
-      const filepath = path.join(context.worktree, ".spavn", "sessions", filename);
+    async ({ filename }) => {
+      const filepath = path.join(worktree, ".spavn", "sessions", filename);
 
       if (!fs.existsSync(filepath)) {
-        return `✗ Session not found: ${filename}`;
+        return ok(`✗ Session not found: ${filename}`);
       }
 
       try {
         const content = fs.readFileSync(filepath, "utf-8");
-        return `✓ Session: ${filename}\n\n${content}`;
+        return ok(`✓ Session: ${filename}\n\n${content}`);
       } catch (error) {
-        return `✗ Error loading session: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  session_save: {
-    description: "Save a session summary with key decisions to .spavn/sessions/",
-    inputSchema: {
-      type: "object",
-      properties: {
-        summary: {
-          type: "string",
-          description: "Brief summary of what was accomplished",
-        },
-        decisions: {
-          type: "array",
-          items: { type: "string" },
-          description: "List of key decisions made",
-        },
-      },
-      required: ["summary", "decisions"],
+  mcpServer.tool(
+    "session_save",
+    "Save a session summary with key decisions to .spavn/sessions/",
+    {
+      summary: z.string().describe("Brief summary of what was accomplished"),
+      decisions: z.array(z.string()).describe("List of key decisions made"),
     },
-    handler: async (args, context) => {
-      const { summary, decisions } = args;
-      const sessionsPath = path.join(context.worktree, ".spavn", "sessions");
+    async ({ summary, decisions }) => {
+      const sessionsPath = path.join(worktree, ".spavn", "sessions");
 
       try {
         fs.mkdirSync(sessionsPath, { recursive: true });
@@ -444,47 +362,42 @@ Sessions: ${sessionCount}`;
         const filename = `${date}-${sessionId}.md`;
         const filepath = path.join(sessionsPath, filename);
 
-        const content = `# Session Summary\n\n${summary}\n\n## Key Decisions\n\n${(decisions as string[]).map((d) => `- ${d}`).join("\n")}`;
+        const content = `# Session Summary\n\n${summary}\n\n## Key Decisions\n\n${decisions.map((d) => `- ${d}`).join("\n")}`;
         fs.writeFileSync(filepath, content);
-        return `✓ Session saved: ${filename}`;
+        return ok(`✓ Session saved: ${filename}`);
       } catch (error) {
-        return `✗ Error saving session: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  // Documentation tools
-  docs_init: {
-    description: "Initialize docs directory with decision/feature/flow subdirectories",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
-      const docsPath = path.join(context.worktree, "docs");
+  // ─── Documentation tools ────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "docs_init",
+    "Initialize docs directory with decision/feature/flow subdirectories",
+    {},
+    async () => {
+      const docsPath = path.join(worktree, "docs");
       try {
         fs.mkdirSync(path.join(docsPath, "decisions"), { recursive: true });
         fs.mkdirSync(path.join(docsPath, "features"), { recursive: true });
         fs.mkdirSync(path.join(docsPath, "flows"), { recursive: true });
-        return `✓ Initialized docs directory at ${docsPath}`;
+        return ok(`✓ Initialized docs directory at ${docsPath}`);
       } catch (error) {
-        return `✗ Error initializing docs: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
+  );
 
-  docs_list: {
-    description: "List all documentation files organized by type",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
-      const docsPath = path.join(context.worktree, "docs");
+  mcpServer.tool(
+    "docs_list",
+    "List all documentation files organized by type",
+    {},
+    async () => {
+      const docsPath = path.join(worktree, "docs");
       if (!fs.existsSync(docsPath)) {
-        return `No docs found. Run docs_init to initialize.`;
+        return ok(`No docs found. Run docs_init to initialize.`);
       }
 
       const types = ["decisions", "features", "flows"];
@@ -496,114 +409,52 @@ Sessions: ${sessionCount}`;
           output += `**${type}:** ${files.length} files\n`;
         }
       }
-      return output;
+      return ok(output);
     },
-  },
+  );
 
-  // GitHub tools
-  github_status: {
-    description: "Check GitHub CLI availability and authentication",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: [],
-    },
-    handler: async (_args, context) => {
+  // ─── GitHub tools ───────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "github_status",
+    "Check GitHub CLI availability and authentication",
+    {},
+    async () => {
       try {
-        const result = await exec("gh", ["auth", "status"], { cwd: context.worktree, nothrow: true });
+        const result = await exec("gh", ["auth", "status"], { cwd: worktree, nothrow: true });
         if (result.exitCode === 0) {
-          return `✓ GitHub CLI authenticated`;
+          return ok(`✓ GitHub CLI authenticated`);
         } else {
-          return `✗ GitHub CLI not authenticated. Run: gh auth login`;
+          return ok(`✗ GitHub CLI not authenticated. Run: gh auth login`);
         }
       } catch (error) {
-        return `✗ GitHub CLI not installed. Install from https://cli.github.com/`;
+        return ok(`✗ GitHub CLI not installed. Install from https://cli.github.com/`);
       }
     },
-  },
+  );
 
-  // Task tools
-  task_finalize: {
-    description: "Finalize implementation - commit, push, and create pull request",
-    inputSchema: {
-      type: "object",
-      properties: {
-        commitMessage: {
-          type: "string",
-          description: "Commit message",
-        },
-      },
-      required: ["commitMessage"],
+  // ─── Task tools ─────────────────────────────────────────────────────────────
+
+  mcpServer.tool(
+    "task_finalize",
+    "Finalize implementation - commit, push, and create pull request",
+    {
+      commitMessage: z.string().describe("Commit message"),
     },
-    handler: async (args, context) => {
-      const message = args.commitMessage as string;
+    async ({ commitMessage }) => {
       try {
-        await exec("git", ["add", "-A"], { cwd: context.worktree, nothrow: true });
-        const result = await exec("git", ["commit", "-m", message], { cwd: context.worktree, nothrow: true });
+        await exec("git", ["add", "-A"], { cwd: worktree, nothrow: true });
+        const result = await exec("git", ["commit", "-m", commitMessage], { cwd: worktree, nothrow: true });
         if (result.exitCode === 0) {
-          return `✓ Committed: ${message.substring(0, 50)}...`;
+          return ok(`✓ Committed: ${commitMessage.substring(0, 50)}...`);
         } else {
-          return `✗ Commit failed: ${result.stderr}`;
+          return ok(`✗ Commit failed: ${result.stderr}`);
         }
       } catch (error) {
-        return `✗ Error: ${error instanceof Error ? error.message : String(error)}`;
+        return err(error);
       }
     },
-  },
-};
-
-// ─── MCP Server ──────────────────────────────────────────────────────────────
-
-export async function startMCPServer(): Promise<void> {
-  const mcpServer = new McpServer({
-    name: "spavn-agents",
-    version: VERSION,
-  });
-
-  // Get the current working directory as the worktree root
-  const worktree = process.cwd();
-
-  // Register all tools
-  for (const [toolName, spec] of Object.entries(TOOL_REGISTRY)) {
-    mcpServer.registerTool(
-      toolName,
-      {
-        description: spec.description,
-        inputSchema: spec.inputSchema,
-      } as any,
-      async (args: any) => {
-        try {
-          const context: ToolContext = {
-            worktree,
-            directory: worktree,
-            sessionID: "mcp-session",
-            messageID: "mcp-message",
-            agent: "mcp",
-          };
-          const result = await spec.handler(args, context);
-          return {
-            content: [
-              {
-                type: "text",
-                text: result,
-              },
-            ],
-          };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Error: ${errorMessage}`,
-              },
-            ],
-            isError: true,
-          };
-        }
-      }
-    );
-  }
+  );
 
   // Start server on stdio
   const transport = new StdioServerTransport();
