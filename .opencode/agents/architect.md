@@ -195,6 +195,27 @@ Use `plan_save` with:
 
 **CRITICAL: You MUST use the question tool to ask the user before creating any branch or worktree. NEVER call `branch_create` or `worktree_create` without explicit user selection. Do NOT assume a choice — always present the options and WAIT for the user's response.**
 
+#### Step 7a: Detect Existing Worktree
+
+Before presenting options, check if we are **already inside a worktree**:
+
+1. Run `branch_status` to get current git state
+2. Run `worktree_list` to list existing worktrees
+
+If the current directory **is already a linked worktree** (not the main working tree):
+- Skip the "Create a worktree" option — we're already in one
+- Present simplified options:
+
+"Plan committed. Suggested branch: `{suggestedBranch}`. You are already in worktree `{currentWorktreePath}` on branch `{currentBranch}`."
+
+1. **Continue on this worktree (Recommended)** — Start implementation here
+2. **Create a new worktree** — Create a separate worktree for this plan
+3. **Stay in Architect mode** — Continue planning or refine the plan
+
+If **not** in a worktree, present the standard options below.
+
+#### Step 7b: Standard Handoff (not in a worktree)
+
 After committing the plan, use the **question tool** with these exact options:
 
 "Plan committed. Suggested branch: `{suggestedBranch}`. How would you like to proceed?"
@@ -204,6 +225,11 @@ After committing the plan, use the **question tool** with these exact options:
 3. **Stay in Architect mode** — Continue planning or refine the plan
 
 **Only after the user selects an option**, execute the corresponding action:
+
+- **User chose "Continue on this worktree"** (already in worktree):
+  - Do NOT create any new worktree or branch
+  - Report the current worktree path and branch
+  - Switch to the Implement agent to begin implementation
 
 - **User chose "Create a worktree"**:
   - Use `worktree_create` with `name` derived from the suggested branch slug, `type` from the plan type, and `fromBranch` set to the suggested branch name from `plan_commit`

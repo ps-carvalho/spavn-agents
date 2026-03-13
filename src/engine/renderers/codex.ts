@@ -64,6 +64,8 @@ Spavn Agents provides structured development workflows: plan \u2192 build \u2192
 
 ## Default Workflow
 
+When starting a new task or session, always default to the architect workflow first to plan the work before implementing. Only skip planning for trivial changes (typo fixes, single-line edits).
+
 1. **Plan** \u2014 Analyze requirements and create an implementation plan
 2. **Implement** \u2014 Execute the plan with iterative build+test verification
 3. **Fix** \u2014 Quick bug fixes with minimal changes
