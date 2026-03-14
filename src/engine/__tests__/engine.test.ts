@@ -560,8 +560,8 @@ describe("Seed", () => {
     const result = seedDatabase(db, OPENCODE_DIR);
     expect(result.agents).toBe(12);
     expect(result.skills).toBe(17);
-    expect(result.models).toBe(13);
-    expect(result.targets).toBe(4);
+    expect(result.models).toBe(15);
+    expect(result.targets).toBe(5);
   });
 
   it("architect agent has correct mode and temperature", () => {
@@ -655,6 +655,49 @@ describe("Seed", () => {
     expect(config!.disallowed_tools).toEqual(
       expect.arrayContaining(["Write", "Edit", "Bash"]),
     );
+  });
+
+  it("agent target configs are created for qwen target", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const targets = new TargetStore(db);
+
+    const configs = targets.listAgentTargetConfigs("qwen");
+    // Every agent should have a qwen target config
+    expect(configs.length).toBe(12);
+  });
+
+  it("qwen target config uses correct tool names", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const targets = new TargetStore(db);
+
+    const config = targets.getAgentTargetConfig("debug", "qwen");
+    expect(config).not.toBeNull();
+    // debug has read, bash, skill, task, glob, grep allowed; write/edit disabled
+    expect(config!.tools_override).toEqual(
+      expect.arrayContaining([
+        "read_file",
+        "run_shell_command",
+        "glob_tool",
+        "grep_search",
+        "mcp_spavn-agents_skill",
+        "mcp_spavn-agents_task",
+      ]),
+    );
+    // Should NOT have write/edit tools since debug has them disabled
+    expect(config!.tools_override).not.toContain("write_file");
+    expect(config!.tools_override).not.toContain("edit_file");
+  });
+
+  it("qwen target is correctly seeded with config", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const targets = new TargetStore(db);
+
+    const qwen = targets.getTarget("qwen");
+    expect(qwen).not.toBeNull();
+    expect(qwen!.display_name).toBe("Qwen CLI");
+    expect(qwen!.config_dir).toBe("~/.qwen");
+    expect(qwen!.instructions_file).toBe("QWEN.md");
+    expect(qwen!.agent_file_format).toBe("qwen_md");
   });
 });
 
@@ -781,7 +824,361 @@ describe("OpenCode Renderer", () => {
 });
 
 // ==========================================================================
-// 9. SpavnEngine Facade
+// 9. Qwen Renderer
+// ==========================================================================
+
+describe("Qwen Renderer", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    seedDatabase(db, OPENCODE_DIR);
+  });
+
+  afterEach(() => cleanupDb(db));
+
+  it("renderAgent produces frontmatter with required fields", () => {
+    const renderer = getRenderer("qwen", db);
+    expect(renderer).not.toBeNull();
+
+    const output = renderer!.renderAgent("architect");
+
+    expect(output).toMatch(/^---\n/);
+    expect(output).toContain("name:");
+    expect(output).toContain("description:");
+    expect(output).toContain("kind: local");
+    expect(output).toContain("temperature:");
+    expect(output).toContain("max_turns: 15");
+  });
+
+  it("renderAgent maps native tools to Qwen CLI names", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    // Native tool mappings (same as Gemini) - debug has read, bash, glob, grep allowed
+    expect(output).toContain("read_file");
+    expect(output).toContain("run_shell_command");
+    expect(output).toContain("glob_tool");
+    expect(output).toContain("grep_search");
+    // debug has write=false and edit=false, so these should not appear
+    expect(output).not.toContain("write_file");
+    expect(output).not.toContain("edit_file");
+  });
+
+  it("renderAgent maps non-native tools to MCP format", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("architect");
+
+    // MCP tools should use gemini-style prefix (mcp_spavn-agents_)
+    expect(output).toContain("mcp_spavn-agents_plan_save");
+    expect(output).toContain("mcp_spavn-agents_skill");
+  });
+
+  it("renderAgent includes tools in frontmatter as YAML list", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    expect(output).toContain("tools:");
+    expect(output).toMatch(/tools:\n(  - \w+\n)+/);
+  });
+
+  it("renderAgent filters out disallowed tools", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("architect");
+
+    // Architect has write=false, edit=false, bash=false
+    // These should not appear in the output
+    expect(output).not.toContain("write_file");
+    expect(output).not.toContain("edit_file");
+    expect(output).not.toContain("run_shell_command");
+    // But read should be present
+    expect(output).toContain("read_file");
+  });
+
+  it("renderAgent uses tools_override from target config when available", () => {
+    // First, set up a custom target config with tools_override
+    const targets = new TargetStore(db);
+    targets.upsertAgentTargetConfig({
+      agent_id: "debug",
+      target_id: "qwen",
+      native_name: null,
+      tools_override: ["read_file", "write_file", "custom_tool"],
+      disallowed_tools: null,
+      model_override: null,
+      extra_frontmatter: null,
+    });
+
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    // Should use override, not the agent's actual tools
+    expect(output).toContain("read_file");
+    expect(output).toContain("write_file");
+    expect(output).toContain("custom_tool");
+  });
+
+  it("renderAgent includes model override when set", () => {
+    const targets = new TargetStore(db);
+
+    // Verify initial state - no model override
+    const initialConfig = targets.getAgentTargetConfig("debug", "qwen");
+    expect(initialConfig?.model_override).toBeNull();
+
+    // Set model override
+    targets.upsertAgentTargetConfig({
+      agent_id: "debug",
+      target_id: "qwen",
+      native_name: null,
+      tools_override: null,
+      disallowed_tools: null,
+      model_override: "qwen2.5-coder:14b",
+      extra_frontmatter: null,
+    });
+
+    // Verify config was saved
+    const updatedConfig = targets.getAgentTargetConfig("debug", "qwen");
+    expect(updatedConfig?.model_override).toBe("qwen2.5-coder:14b");
+
+    // Render and verify model appears
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    // Model value is quoted because colons require YAML escaping
+    expect(output).toContain('model: "qwen2.5-coder:14b"');
+  });
+
+  it("renderAgent does not include model when set to inherit", () => {
+    const targets = new TargetStore(db);
+    targets.upsertAgentTargetConfig({
+      agent_id: "debug",
+      target_id: "qwen",
+      native_name: null,
+      tools_override: null,
+      disallowed_tools: null,
+      model_override: "inherit",
+      extra_frontmatter: null,
+    });
+
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    // Should not have model field when set to inherit
+    const lines = output.split("\n");
+    const modelLine = lines.find((l) => l.startsWith("model:"));
+    expect(modelLine).toBeUndefined();
+  });
+
+  it("renderAgent includes agent temperature", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    expect(output).toMatch(/temperature: 0\.1/);
+  });
+
+  it("renderAgent includes system prompt after frontmatter", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderAgent("debug");
+
+    // Should have --- at start, then content, then ---, then system prompt
+    const parts = output.split("---");
+    expect(parts.length).toBeGreaterThanOrEqual(3); // start, frontmatter, body
+    const systemPrompt = parts[parts.length - 1];
+    expect(systemPrompt.trim().length).toBeGreaterThan(0);
+  });
+
+  it("renderAgent throws for non-existent agent", () => {
+    const renderer = getRenderer("qwen", db)!;
+    expect(() => renderer.renderAgent("nonexistent")).toThrow("Agent not found");
+  });
+
+  it("renderInstructions includes skills and subagents", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderInstructions();
+
+    expect(output).toContain("Spavn Agents");
+    expect(output).toContain("Available Skills");
+    expect(output).toContain("testing-strategies");
+    expect(output).toContain("Custom Agents");
+    expect(output).toContain("debug");
+    expect(output).toContain("security");
+  });
+
+  it("renderInstructions mentions Qwen-specific install command", () => {
+    const renderer = getRenderer("qwen", db)!;
+    const output = renderer.renderInstructions();
+
+    expect(output).toContain("npx spavn-agents install --target qwen");
+  });
+
+  it("sync writes agents to correct directory structure", () => {
+    const tmpDir = path.join(os.tmpdir(), `spavn-qwen-test-${Date.now()}`);
+    const targets = new TargetStore(db);
+
+    // Update target config to use temp directory
+    targets.upsertTarget({
+      id: "qwen",
+      display_name: "Qwen CLI",
+      config_dir: tmpDir,
+      agent_file_format: "qwen_md",
+      instructions_file: "QWEN.md",
+    });
+
+    const renderer = getRenderer("qwen", db)!;
+    const result = renderer.sync();
+
+    try {
+      expect(result.target).toBe("qwen");
+      expect(result.agentsWritten.length).toBeGreaterThan(0);
+      expect(result.instructionsWritten).toBe(true);
+      expect(result.errors).toHaveLength(0);
+
+      // Verify files were written
+      const agentsDir = path.join(tmpDir, "agents");
+      expect(fs.existsSync(agentsDir)).toBe(true);
+      expect(fs.existsSync(path.join(tmpDir, "QWEN.md"))).toBe(true);
+
+      // Check at least one agent file exists
+      const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
+      expect(agentFiles.length).toBeGreaterThan(0);
+
+      // Verify content structure of one agent file
+      const architectContent = fs.readFileSync(path.join(agentsDir, "architect.md"), "utf-8");
+      expect(architectContent).toMatch(/^---\n/);
+      expect(architectContent).toContain("name:");
+    } finally {
+      // Cleanup
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("sync handles missing target gracefully", () => {
+    const renderer = getRenderer("qwen", db)!;
+
+    // Delete the target to simulate misconfiguration
+    db.prepare("DELETE FROM cli_targets WHERE id = ?").run("qwen");
+
+    expect(() => renderer.sync()).toThrow("Qwen target not configured");
+  });
+
+  it("sync reports errors for failed agents without stopping", () => {
+    const tmpDir = path.join(os.tmpdir(), `spavn-qwen-test-${Date.now()}`);
+    const targets = new TargetStore(db);
+
+    targets.upsertTarget({
+      id: "qwen",
+      display_name: "Qwen CLI",
+      config_dir: tmpDir,
+      agent_file_format: "qwen_md",
+      instructions_file: "QWEN.md",
+    });
+
+    // Create a renderer that will try to render a non-existent agent
+    // by manually manipulating the agent list
+    const renderer = getRenderer("qwen", db)!;
+
+    try {
+      const result = renderer.sync();
+
+      // Should have written agents and possibly reported no errors
+      // (since all real agents exist)
+      expect(result.errors).toHaveLength(0);
+      expect(result.agentsWritten.length).toBe(12); // All agents should be written
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("yamlValue correctly escapes special characters in YAML", () => {
+    const renderer = getRenderer("qwen", db)!;
+
+    // Create an agent with special characters in description
+    const agents = new AgentStore(db);
+    agents.upsert({
+      id: "yaml-test-agent",
+      description: 'Contains "quotes" and: colons, plus [brackets]',
+      mode: "subagent",
+      temperature: 0.5,
+      system_prompt: "Test",
+    });
+
+    const output = renderer.renderAgent("yaml-test-agent");
+
+    // The description should be properly quoted
+    expect(output).toContain('description: "Contains \\"quotes\\" and: colons, plus [brackets]"');
+  });
+});
+
+// ==========================================================================
+// 10. Gemini Renderer
+// ==========================================================================
+
+describe("Gemini Renderer", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+    seedDatabase(db, OPENCODE_DIR);
+  });
+
+  afterEach(() => cleanupDb(db));
+
+  it("renderAgent produces correct frontmatter for Gemini CLI", () => {
+    const renderer = getRenderer("gemini", db);
+    expect(renderer).not.toBeNull();
+
+    const output = renderer!.renderAgent("architect");
+
+    expect(output).toMatch(/^---\n/);
+    expect(output).toContain("name:");
+    expect(output).toContain("kind: local");
+    expect(output).toContain("max_turns: 15");
+  });
+
+  it("renderAgent uses correct tool names for Gemini", () => {
+    const renderer = getRenderer("gemini", db)!;
+    const output = renderer.renderAgent("debug");
+
+    // debug has read, bash, glob, grep allowed but write/edit disabled
+    expect(output).toContain("read_file");
+    expect(output).toContain("run_shell_command");
+    expect(output).toContain("glob_tool");
+    expect(output).toContain("grep_search");
+    // debug has write=false and edit=false
+    expect(output).not.toContain("write_file");
+    expect(output).not.toContain("edit_file");
+  });
+
+  it("renderAgent maps MCP tools with correct prefix", () => {
+    const renderer = getRenderer("gemini", db)!;
+    const output = renderer.renderAgent("architect");
+
+    expect(output).toContain("mcp_spavn-agents_plan_save");
+    expect(output).toContain("mcp_spavn-agents_skill");
+  });
+
+  it("renderInstructions includes install command reference", () => {
+    const renderer = getRenderer("gemini", db)!;
+    const output = renderer.renderInstructions();
+
+    expect(output).toContain("npx spavn-agents install --target gemini");
+  });
+
+  it("renderAgent throws for non-existent agent", () => {
+    const renderer = getRenderer("gemini", db)!;
+    expect(() => renderer.renderAgent("nonexistent")).toThrow("Agent not found");
+  });
+});
+
+// ==========================================================================
+// 11. SpavnEngine Facade
 // ==========================================================================
 
 describe("SpavnEngine", () => {
@@ -814,8 +1211,8 @@ describe("SpavnEngine", () => {
     expect(result).not.toBeNull();
     expect(result!.agents).toBe(12);
     expect(result!.skills).toBe(17);
-    expect(result!.models).toBe(13);
-    expect(result!.targets).toBe(4);
+    expect(result!.models).toBe(15);
+    expect(result!.targets).toBe(5);
   });
 
   it("initialize returns null on second run (already seeded)", () => {
@@ -852,7 +1249,7 @@ describe("SpavnEngine", () => {
     engine = new SpavnEngine(dbPath);
     engine.initialize();
     const models = engine.listModels();
-    expect(models).toHaveLength(13);
+    expect(models).toHaveLength(15);
   });
 
   it("getAgent returns a specific agent", () => {

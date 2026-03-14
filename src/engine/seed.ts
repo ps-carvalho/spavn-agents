@@ -69,6 +69,16 @@ const GEMINI_NATIVE_TOOLS: Record<string, string> = {
   grep: "grep_search",
 };
 
+/** Qwen native tool name mapping from opencode short names. */
+const QWEN_NATIVE_TOOLS: Record<string, string> = {
+  read: "read_file",
+  write: "write_file",
+  edit: "edit_file",
+  bash: "run_shell_command",
+  glob: "glob_tool",
+  grep: "grep_search",
+};
+
 /** MCP tool prefix for spavn-agents tools exposed via MCP (Claude uses __). */
 const MCP_PREFIX = "mcp__spavn-agents__";
 
@@ -228,6 +238,13 @@ const BUILTIN_TARGETS = [
     agent_file_format: "gemini_md",
     instructions_file: "GEMINI.md",
   },
+  {
+    id: "qwen",
+    display_name: "Qwen CLI",
+    config_dir: "~/.qwen",
+    agent_file_format: "qwen_md",
+    instructions_file: "QWEN.md",
+  },
 ] as const;
 
 function seedTargets(store: TargetStore): number {
@@ -315,6 +332,33 @@ function seedAgentTargetConfigs(
       targetStore.upsertAgentTargetConfig({
         agent_id: agentId,
         target_id: "gemini",
+        native_name: null,
+        tools_override: toolsOverride.length > 0 ? toolsOverride : null,
+        disallowed_tools: null,
+        model_override: null,
+        extra_frontmatter: null,
+      });
+    }
+
+    // ---- Qwen target config ----
+    {
+      const toolsOverride: string[] = [];
+
+      for (const [toolName, allowed] of Object.entries(tools)) {
+        const isAllowed = allowed === true || allowed === "true";
+        if (!isAllowed) continue;
+
+        const qwenName = QWEN_NATIVE_TOOLS[toolName];
+        if (qwenName) {
+          toolsOverride.push(qwenName);
+        } else {
+          toolsOverride.push(`${MCP_PREFIX_GEMINI}${toolName}`);
+        }
+      }
+
+      targetStore.upsertAgentTargetConfig({
+        agent_id: agentId,
+        target_id: "qwen",
         native_name: null,
         tools_override: toolsOverride.length > 0 ? toolsOverride : null,
         disallowed_tools: null,
