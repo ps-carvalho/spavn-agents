@@ -147,8 +147,8 @@ class GeminiRenderer implements Renderer {
 
   renderInstructions(): string {
     const skills = this.skills.list();
-    const agents = this.agents.list();
-    const subagents = agents.filter((a) => a.mode === "subagent");
+    const knowledgeSkills = skills.filter((s) => s.kind === "knowledge");
+    const enhancedSkills = skills.filter((s) => s.kind === "enhanced");
 
     return `# Spavn Agents — Global Instructions
 
@@ -169,19 +169,19 @@ When starting a new task or session, always default to the architect workflow fi
 
 ## Available Skills
 
-${skills.map((s) => `  - ${s.id}`).join("\n")}
+${knowledgeSkills.map((s) => `  - ${s.id}`).join("\n")}
 
-## Custom Agents
+## Enhanced Skills (via worker agent)
 
-${subagents.map((a) => a.id).join(", ")}
+${enhancedSkills.map((s) => s.id).join(", ")}
 
 ## Quality Gate
 
 After implementation, assess change scope and launch parallel tool calls:
 - **Trivial** (docs only): Skip quality gate
-- **Low** (tests/config): Testing agent only
-- **Standard** (normal code): Testing + Security + Audit + Docs agents
-- **High** (auth/payments/infra): All agents including Perf and DevOps
+- **Low** (tests/config): Testing worker only
+- **Standard** (normal code): Testing + Security + Audit + Docs workers
+- **High** (auth/payments/infra): All workers including Perf and DevOps
 `;
   }
 

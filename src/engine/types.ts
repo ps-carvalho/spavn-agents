@@ -10,6 +10,17 @@ export type PermissionLevel = 'allow' | 'ask' | 'deny';
 export type ModelTier = 'premium' | 'standard' | 'fast';
 export type BindingType = 'auto' | 'recommended';
 export type InstallScope = 'global' | 'project';
+export type SkillKind = 'knowledge' | 'enhanced';
+export type AccessLevel = 'read-only' | 'write' | 'full';
+export type TriggerPhase = 'implementation' | 'quality-gate' | 'analysis';
+
+// ---- Enhanced skill types -------------------------------------------------
+
+export interface SkillTrigger {
+  scopes?: string[];
+  file_patterns?: string[];
+  phase?: TriggerPhase;
+}
 
 // ---- Row interfaces -------------------------------------------------------
 
@@ -53,6 +64,13 @@ export interface Skill {
   name: string;
   description: string | null;
   content: string;
+  kind: SkillKind;
+  temperature: number | null;
+  access_level: AccessLevel | null;
+  trigger_config: SkillTrigger | null;
+  output_format: string | null;
+  linked_skills: string[] | null;
+  system_prompt: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -63,6 +81,13 @@ export interface SkillInput {
   name: string;
   description?: string | null;
   content: string;
+  kind?: SkillKind;
+  temperature?: number | null;
+  access_level?: AccessLevel | null;
+  trigger_config?: SkillTrigger | null;
+  output_format?: string | null;
+  linked_skills?: string[] | null;
+  system_prompt?: string | null;
 }
 
 /** Row from the `agent_skills` table. */

@@ -417,58 +417,67 @@ export async function startMCPServer(): Promise<void> {
 
   mcpServer.tool(
     "skill",
-    "Load a spavn skill by name. Skills provide specialized domain knowledge or enhanced behavioral instructions (e.g. frontend-development, ui-design, testing, security, etc.). Supports comma-separated names to load multiple skills in one call.",
+    "Load a spavn skill by name. Skills provide specialized domain knowledge or enhanced behavioral instructions (e.g. frontend-development, ui-design, testing, security, etc.)",
     {
-      name: z.string().describe("Skill name to load (e.g. frontend-development, ui-design, testing, security). Use comma-separated names for multiple skills (e.g. 'react-patterns, nextjs-patterns, ui-design')"),
+      name: z.string().describe("Skill name to load (e.g. frontend-development, ui-design, testing, security)"),
       mode: z.string().optional().describe("Operating mode context for access-level resolution (e.g. architect, implement, fix)"),
     },
-    async ({ name: skillNameInput, mode }) => {
-      // Support comma-separated skill names
-      const skillNames = skillNameInput.split(",").map((s) => s.trim()).filter(Boolean);
-      const results: string[] = [];
-      const notFound: string[] = [];
+    async ({ name: skillName, mode }) => {
+      // Look for skills in the bundled .opencode/skills/ directory
+      const skillPaths = [
+        path.resolve(__dirname, "..", ".opencode", "skills", skillName, "SKILL.md"),
+        path.join(worktree, ".opencode", "skills", skillName, "SKILL.md"),
+      ];
 
-      for (const skillName of skillNames) {
-        // Look for skills in the bundled .opencode/skills/ directory
-        const skillPaths = [
-          path.resolve(__dirname, "..", ".opencode", "skills", skillName, "SKILL.md"),
-          path.join(worktree, ".opencode", "skills", skillName, "SKILL.md"),
-        ];
+      for (const skillPath of skillPaths) {
+        if (fs.existsSync(skillPath)) {
+          try {
+            const content = fs.readFileSync(skillPath, "utf-8");
 
-        let found = false;
-        for (const skillPath of skillPaths) {
-          if (fs.existsSync(skillPath)) {
-            try {
-              const content = fs.readFileSync(skillPath, "utf-8");
-              results.push(`✓ Skill loaded: ${skillName}\n\n${content}`);
-              found = true;
-              break;
-            } catch (error) {
-              return err(error);
+            // For enhanced skills with a mode context, add effective access info
+            let header = `✓ Skill loaded: ${skillName}`;
+            if (mode) {
+              // Parse frontmatter to check if this is an enhanced skill
+              const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+              if (fmMatch) {
+                const fm = fmMatch[1];
+                const kindMatch = fm.match(/^kind:\s*(.+)$/m);
+                const accessMatch = fm.match(/^access_level:\s*(.+)$/m);
+                if (kindMatch && kindMatch[1].trim() === "enhanced" && accessMatch) {
+                  const skillAccess = accessMatch[1].trim();
+                  // Compute effective access (intersection with mode ceiling)
+                  const ceilings: Record<string, string> = {
+                    architect: "read-only",
+                    implement: "full",
+                    fix: "full",
+                  };
+                  const ceiling = ceilings[mode];
+                  const order: Record<string, number> = { "read-only": 0, write: 1, full: 2 };
+                  const effective = ceiling && order[skillAccess] !== undefined && order[ceiling] !== undefined
+                    ? (order[skillAccess] <= order[ceiling] ? skillAccess : ceiling)
+                    : skillAccess;
+                  header += ` (enhanced, effective_access: ${effective})`;
+                }
+              }
             }
+
+            return ok(`${header}\n\n${content}`);
+          } catch (error) {
+            return err(error);
           }
         }
-
-        if (!found) {
-          notFound.push(skillName);
-        }
       }
 
-      // Build response
-      let output = results.join("\n\n---\n\n");
-
-      if (notFound.length > 0) {
-        const bundledSkillsDir = path.resolve(__dirname, "..", ".opencode", "skills");
-        let available: string[] = [];
-        if (fs.existsSync(bundledSkillsDir)) {
-          available = fs.readdirSync(bundledSkillsDir).filter((d) =>
-            fs.existsSync(path.join(bundledSkillsDir, d, "SKILL.md")),
-          );
-        }
-        output += `\n\n✗ Skills not found: ${notFound.join(", ")}\n\nAvailable skills: ${available.join(", ")}`;
+      // List available skills for helpful error
+      const bundledSkillsDir = path.resolve(__dirname, "..", ".opencode", "skills");
+      let available: string[] = [];
+      if (fs.existsSync(bundledSkillsDir)) {
+        available = fs.readdirSync(bundledSkillsDir).filter((d) =>
+          fs.existsSync(path.join(bundledSkillsDir, d, "SKILL.md")),
+        );
       }
 
-      return ok(output);
+      return ok(`✗ Skill not found: ${skillName}\n\nAvailable skills: ${available.join(", ")}`);
     },
   );
 

@@ -127,18 +127,26 @@ export const MODEL_REGISTRY: ModelEntry[] = [
 /** Primary agents receive the best available model */
 export const PRIMARY_AGENTS = ["architect", "implement", "fix"] as const;
 
-/** Subagents receive a fast/cost-effective model */
-export const SUBAGENTS = ["debug", "coder", "testing", "security", "devops", "audit", "refactor", "docs-writer", "perf", "worker"] as const;
+/** Single generic worker replaces all former subagents */
+export const SUBAGENTS = ["worker"] as const;
 
-/** All agent names combined */
+/** Enhanced skills that replace the former subagent .md files */
+export const ENHANCED_SKILLS = [
+  "audit", "coder", "debug", "devops", "docs-writer",
+  "perf", "refactor", "security", "testing",
+] as const;
+
+/** All agent names combined (3 primary + 1 worker) */
 export const ALL_AGENTS = [...PRIMARY_AGENTS, ...SUBAGENTS] as const;
 
 /** OpenCode built-in agents disabled when spavn-agents is installed.
  *  Replaced by spavn equivalents: build → implement, plan → architect */
 export const DISABLED_BUILTIN_AGENTS = ["build", "plan"] as const;
 
-/** Old agent files to clean up from previous spavn-agents versions */
+/** Old agent files to clean up from previous spavn-agents versions.
+ *  Includes the 9 former subagent files replaced by enhanced skills. */
 export const STALE_AGENT_FILES = [
+  // Legacy agents from earlier versions
   "build.md",
   "plan.md",
   "review.md",
@@ -147,6 +155,16 @@ export const STALE_AGENT_FILES = [
   "qa.md",
   "guard.md",
   "ship.md",
+  // Former subagents now replaced by enhanced skills + worker
+  "audit.md",
+  "coder.md",
+  "debug.md",
+  "devops.md",
+  "docs-writer.md",
+  "perf.md",
+  "refactor.md",
+  "security.md",
+  "testing.md",
 ] as const;
 
 /**

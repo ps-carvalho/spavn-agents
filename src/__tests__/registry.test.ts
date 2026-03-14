@@ -3,6 +3,7 @@ import {
   MODEL_REGISTRY,
   PRIMARY_AGENTS,
   SUBAGENTS,
+  ENHANCED_SKILLS,
   ALL_AGENTS,
   DISABLED_BUILTIN_AGENTS,
   STALE_AGENT_FILES,
@@ -27,12 +28,12 @@ describe("Agent Constants", () => {
   });
 
   describe("SUBAGENTS", () => {
-    it("contains the correct subagent names", () => {
-      expect(SUBAGENTS).toEqual(["debug", "coder", "testing", "security", "devops", "audit", "refactor", "docs-writer", "perf", "worker"]);
+    it("contains only the generic worker", () => {
+      expect(SUBAGENTS).toEqual(["worker"]);
     });
 
-    it("has 10 subagents", () => {
-      expect(SUBAGENTS).toHaveLength(10);
+    it("has 1 subagent (worker)", () => {
+      expect(SUBAGENTS).toHaveLength(1);
     });
 
     it("is a readonly tuple", () => {
@@ -40,27 +41,31 @@ describe("Agent Constants", () => {
     });
   });
 
+  describe("ENHANCED_SKILLS", () => {
+    it("contains the 9 former subagent names as enhanced skills", () => {
+      expect(ENHANCED_SKILLS).toEqual([
+        "audit", "coder", "debug", "devops", "docs-writer",
+        "perf", "refactor", "security", "testing",
+      ]);
+    });
+
+    it("has 9 enhanced skills", () => {
+      expect(ENHANCED_SKILLS).toHaveLength(9);
+    });
+  });
+
   describe("ALL_AGENTS", () => {
-    it("contains all primary and subagent names", () => {
+    it("contains all primary agents and worker", () => {
       expect(ALL_AGENTS).toEqual([
         "architect",
         "implement",
         "fix",
-        "debug",
-        "coder",
-        "testing",
-        "security",
-        "devops",
-        "audit",
-        "refactor",
-        "docs-writer",
-        "perf",
         "worker",
       ]);
     });
 
-    it("has 13 total agents", () => {
-      expect(ALL_AGENTS).toHaveLength(13);
+    it("has 4 total agents", () => {
+      expect(ALL_AGENTS).toHaveLength(4);
     });
 
     it("includes all primary agents", () => {
@@ -160,7 +165,19 @@ describe("STALE_AGENT_FILES", () => {
   });
 
   it("has correct number of stale files", () => {
-    expect(STALE_AGENT_FILES).toHaveLength(8);
+    expect(STALE_AGENT_FILES).toHaveLength(17);
+  });
+
+  it("includes former subagent files for cleanup", () => {
+    expect(STALE_AGENT_FILES).toContain("audit.md");
+    expect(STALE_AGENT_FILES).toContain("coder.md");
+    expect(STALE_AGENT_FILES).toContain("debug.md");
+    expect(STALE_AGENT_FILES).toContain("devops.md");
+    expect(STALE_AGENT_FILES).toContain("docs-writer.md");
+    expect(STALE_AGENT_FILES).toContain("perf.md");
+    expect(STALE_AGENT_FILES).toContain("refactor.md");
+    expect(STALE_AGENT_FILES).toContain("security.md");
+    expect(STALE_AGENT_FILES).toContain("testing.md");
   });
 
   it("all entries have .md extension", () => {
