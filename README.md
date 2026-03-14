@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/spavn-agents-111?style=for-the-badge&labelColor=111&color=4d96ff" alt="spavn-agents" height="40">
 </p>
 
-<h3 align="center">Structured AI development workflows for <a href="https://opencode.ai">OpenCode</a>, <a href="https://claude.ai">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, and <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a>.<br>Plan. Build. Ship. With discipline.</h3>
+<h3 align="center">Structured AI development workflows for <a href="https://opencode.ai">OpenCode</a>, <a href="https://claude.ai">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a>, and <a href="https://github.com/QwenLM/qwen-code">Qwen CLI</a>.<br>Plan. Build. Ship. With discipline.</h3>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/spavn-agents"><img src="https://img.shields.io/npm/v/spavn-agents.svg?style=flat-square&color=4d96ff" alt="npm version"></a>
@@ -66,11 +66,15 @@ npx spavn-agents install --target codex    # Render AGENTS.md instructions
 # Gemini CLI
 npx spavn-agents install --target gemini   # Render agents + GEMINI.md
 
+# Qwen CLI
+npx spavn-agents install --target qwen     # Render agents + QWEN.md
+
 # Multiple targets
 npx spavn-agents install --target opencode
 npx spavn-agents install --target claude
 npx spavn-agents install --target codex
 npx spavn-agents install --target gemini
+npx spavn-agents install --target qwen
 ```
 
 Your sessions now have **12 specialized agents**, **35 tools**, and **17 domain skills**.
@@ -165,6 +169,7 @@ This means you can install once, then render to as many targets as you need. Fou
 | **OpenCode** | `~/.config/opencode` | Per-agent `.md` with tools/permission YAML | — |
 | **Codex CLI** | `~/.codex` | Single `agents/AGENTS.md` | `agents/AGENTS.md` |
 | **Gemini CLI** | `~/.gemini` | Per-agent `.md` with Gemini frontmatter | `GEMINI.md` |
+| **Qwen CLI** | `~/.qwen` | Per-agent `.md` with Qwen frontmatter | `QWEN.md` |
 
 Changes to agents or skills in the DB are picked up by `sync` without re-downloading anything.
 
@@ -463,8 +468,8 @@ your-project/
 
 ```bash
 npx spavn-agents install                              # Install plugin, agents, and skills (OpenCode default)
-npx spavn-agents install --target claude|opencode|codex|gemini  # Install to specific CLI target
-npx spavn-agents sync --target claude|opencode|codex|gemini     # Re-render from DB to target
+npx spavn-agents install --target claude|opencode|codex|gemini|qwen  # Install to specific CLI target
+npx spavn-agents sync --target claude|opencode|codex|gemini|qwen     # Re-render from DB to target
 npx spavn-agents configure                            # Global model selection
 npx spavn-agents configure --project                  # Per-project model selection
 npx spavn-agents configure --reset                    # Reset global models
@@ -477,7 +482,7 @@ npx spavn-agents status                               # Show installation, model
 
 ## Requirements
 
-- [OpenCode](https://opencode.ai) >= 1.0.0, [Claude Code](https://claude.ai), [Codex CLI](https://github.com/openai/codex), or [Gemini CLI](https://github.com/google-gemini/gemini-cli)
+- [OpenCode](https://opencode.ai) >= 1.0.0, [Claude Code](https://claude.ai), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Qwen CLI](https://github.com/QwenLM/qwen-code)
 - Node.js >= 18.0.0
 - Git (for branch/worktree features)
 - [GitHub CLI](https://cli.github.com/) (optional — for PR creation and issue integration)
@@ -614,5 +619,5 @@ test: add or update tests
 
 <p align="center">
   <br>
-  <sub>Built for the <a href="https://opencode.ai">OpenCode</a>, <a href="https://claude.ai">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, and <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a> communities</sub>
+  <sub>Built for the <a href="https://opencode.ai">OpenCode</a>, <a href="https://claude.ai">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a>, and <a href="https://github.com/QwenLM/qwen-code">Qwen CLI</a> communities</sub>
 </p>

@@ -266,7 +266,7 @@ function sync(): void {
   const target = parseTargetFlag();
   if (!target) {
     console.error("Error: --target flag is required for sync.");
-    console.error("Usage: npx spavn-agents sync --target claude|opencode|codex|gemini");
+    console.error("Usage: npx spavn-agents sync --target claude|opencode|codex|gemini|qwen");
     process.exit(1);
   }
 
@@ -960,6 +960,7 @@ EXAMPLES:
   npx ${PLUGIN_NAME} install --target opencode  # Install to OpenCode
   npx ${PLUGIN_NAME} install --target codex     # Install to Codex CLI
   npx ${PLUGIN_NAME} install --target gemini    # Install to Gemini CLI
+  npx ${PLUGIN_NAME} install --target qwen      # Install to Qwen CLI
   npx ${PLUGIN_NAME} sync --target claude       # Re-sync agents to Claude Code
   npx ${PLUGIN_NAME} configure                  # Global model selection
   npx ${PLUGIN_NAME} configure --project        # Per-project models

@@ -122,6 +122,22 @@ export const MODEL_REGISTRY: ModelEntry[] = [
     tier: "fast",
     description: "Fast general-purpose chat model",
   },
+
+  // ── Qwen ───────────────────────────────────────────────────
+  {
+    id: "qwen/qwen3-coder-plus",
+    name: "Qwen3-Coder-Plus",
+    provider: "Alibaba Cloud",
+    tier: "premium",
+    description: "State-of-the-art code model optimized for software development",
+  },
+  {
+    id: "qwen/qwen3.5-plus",
+    name: "Qwen3.5-Plus",
+    provider: "Alibaba Cloud",
+    tier: "premium",
+    description: "Latest Qwen model with advanced reasoning capabilities",
+  },
 ];
 
 /** Primary agents receive the best available model */
