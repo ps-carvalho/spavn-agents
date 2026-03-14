@@ -417,11 +417,12 @@ export async function startMCPServer(): Promise<void> {
 
   mcpServer.tool(
     "skill",
-    "Load a spavn skill by name. Skills provide specialized domain knowledge (e.g. frontend-development, ui-design, api-design, database-design, etc.)",
+    "Load a spavn skill by name. Skills provide specialized domain knowledge or enhanced behavioral instructions (e.g. frontend-development, ui-design, testing, security, etc.)",
     {
-      name: z.string().describe("Skill name to load (e.g. frontend-development, ui-design, api-design)"),
+      name: z.string().describe("Skill name to load (e.g. frontend-development, ui-design, testing, security)"),
+      mode: z.string().optional().describe("Operating mode context for access-level resolution (e.g. architect, implement, fix)"),
     },
-    async ({ name: skillName }) => {
+    async ({ name: skillName, mode }) => {
       // Look for skills in the bundled .opencode/skills/ directory
       const skillPaths = [
         path.resolve(__dirname, "..", ".opencode", "skills", skillName, "SKILL.md"),
@@ -432,7 +433,35 @@ export async function startMCPServer(): Promise<void> {
         if (fs.existsSync(skillPath)) {
           try {
             const content = fs.readFileSync(skillPath, "utf-8");
-            return ok(`✓ Skill loaded: ${skillName}\n\n${content}`);
+
+            // For enhanced skills with a mode context, add effective access info
+            let header = `✓ Skill loaded: ${skillName}`;
+            if (mode) {
+              // Parse frontmatter to check if this is an enhanced skill
+              const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+              if (fmMatch) {
+                const fm = fmMatch[1];
+                const kindMatch = fm.match(/^kind:\s*(.+)$/m);
+                const accessMatch = fm.match(/^access_level:\s*(.+)$/m);
+                if (kindMatch && kindMatch[1].trim() === "enhanced" && accessMatch) {
+                  const skillAccess = accessMatch[1].trim();
+                  // Compute effective access (intersection with mode ceiling)
+                  const ceilings: Record<string, string> = {
+                    architect: "read-only",
+                    implement: "full",
+                    fix: "full",
+                  };
+                  const ceiling = ceilings[mode];
+                  const order: Record<string, number> = { "read-only": 0, write: 1, full: 2 };
+                  const effective = ceiling && order[skillAccess] !== undefined && order[ceiling] !== undefined
+                    ? (order[skillAccess] <= order[ceiling] ? skillAccess : ceiling)
+                    : skillAccess;
+                  header += ` (enhanced, effective_access: ${effective})`;
+                }
+              }
+            }
+
+            return ok(`${header}\n\n${content}`);
           } catch (error) {
             return err(error);
           }

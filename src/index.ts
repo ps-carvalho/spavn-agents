@@ -20,15 +20,7 @@ const AGENT_DESCRIPTIONS: Record<string, string> = {
   implement: "Development mode — ready to implement",
   architect: "Planning mode — read-only analysis",
   fix: "Quick fix mode — fast turnaround",
-  debug: "Debug subagent — root cause analysis",
-  coder: "Coder subagent — multi-layer implementation",
-  testing: "Testing subagent — writing tests",
-  security: "Security subagent — vulnerability audit",
-  devops: "DevOps subagent — CI/CD and deployment",
-  audit: "Audit subagent — code quality assessment",
-  refactor: "Refactor subagent — behavior-preserving restructuring",
-  "docs-writer": "Docs subagent — documentation generation",
-  perf: "Perf subagent — performance analysis",
+  worker: "Worker agent — executing enhanced skill",
 };
 
 // ─── Tool Notification Config ────────────────────────────────────────────────

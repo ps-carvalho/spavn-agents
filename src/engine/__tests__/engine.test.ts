@@ -558,10 +558,10 @@ describe("Seed", () => {
 
   it("seedDatabase returns correct counts", () => {
     const result = seedDatabase(db, OPENCODE_DIR);
-    expect(result.agents).toBe(12);
-    expect(result.skills).toBe(17);
-    expect(result.models).toBe(15);
-    expect(result.targets).toBe(5);
+    expect(result.agents).toBe(4);    // 3 primary + 1 worker
+    expect(result.skills).toBe(44);   // 35 knowledge + 9 enhanced
+    expect(result.models).toBe(13);
+    expect(result.targets).toBe(5);   // 4 original + qwen
   });
 
   it("architect agent has correct mode and temperature", () => {
@@ -587,17 +587,17 @@ describe("Seed", () => {
     expect(toolMap.skill).toBe(1);
   });
 
-  it("debug agent has bash permissions with expected patterns", () => {
+  it("worker agent has bash permissions with expected patterns", () => {
     seedDatabase(db, OPENCODE_DIR);
     const agents = new AgentStore(db);
-    const perms = agents.getBashPermissions("debug");
+    const perms = agents.getBashPermissions("worker");
 
     const permMap = Object.fromEntries(perms.map((p) => [p.pattern, p.permission]));
     expect(permMap["*"]).toBe("ask");
     expect(permMap["git status*"]).toBe("allow");
     expect(permMap["git log*"]).toBe("allow");
     expect(permMap["git diff*"]).toBe("allow");
-    expect(permMap["__edit__"]).toBe("deny");
+    expect(permMap["__edit__"]).toBe("allow");
   });
 
   it("skills have non-empty content", () => {
@@ -605,10 +605,70 @@ describe("Seed", () => {
     const skills = new SkillStore(db);
     const allSkills = skills.list();
 
-    expect(allSkills.length).toBe(17);
+    expect(allSkills.length).toBe(44);  // 35 knowledge + 9 enhanced
     for (const skill of allSkills) {
       expect(skill.content.length).toBeGreaterThan(0);
     }
+  });
+
+  it("enhanced skills have correct kind and fields", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const skills = new SkillStore(db);
+    const enhanced = skills.listEnhanced();
+
+    expect(enhanced.length).toBe(9);
+    for (const skill of enhanced) {
+      expect(skill.kind).toBe("enhanced");
+      expect(skill.access_level).toBeTruthy();
+      expect(skill.system_prompt).toBeTruthy();
+    }
+  });
+
+  it("testing enhanced skill has correct trigger config", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const skills = new SkillStore(db);
+    const testing = skills.get("testing");
+
+    expect(testing).not.toBeNull();
+    expect(testing!.kind).toBe("enhanced");
+    expect(testing!.access_level).toBe("write");
+    expect(testing!.trigger_config).not.toBeNull();
+    expect(testing!.trigger_config!.scopes).toEqual(["low", "standard", "high"]);
+    expect(testing!.trigger_config!.phase).toBe("quality-gate");
+    expect(testing!.linked_skills).toEqual(["testing-strategies"]);
+  });
+
+  it("getByTrigger returns matching skills", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const skills = new SkillStore(db);
+
+    const standardQG = skills.getByTrigger("standard", "quality-gate");
+    const skillIds = standardQG.map((s) => s.id).sort();
+    expect(skillIds).toContain("testing");
+    expect(skillIds).toContain("security");
+    expect(skillIds).toContain("audit");
+  });
+
+  it("getEffectiveAccess intersects with mode ceiling", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const skills = new SkillStore(db);
+
+    // testing has access_level: write
+    // architect mode ceiling: read-only → min(write, read-only) = read-only
+    expect(skills.getEffectiveAccess("testing", "architect")).toBe("read-only");
+    // implement mode ceiling: full → min(write, full) = write
+    expect(skills.getEffectiveAccess("testing", "implement")).toBe("write");
+  });
+
+  it("getWithLinked resolves linked skills", () => {
+    seedDatabase(db, OPENCODE_DIR);
+    const skills = new SkillStore(db);
+
+    const result = skills.getWithLinked("testing");
+    expect(result).not.toBeNull();
+    expect(result!.skill.id).toBe("testing");
+    expect(result!.linked.length).toBe(1);
+    expect(result!.linked[0].id).toBe("testing-strategies");
   });
 
   it("targets are seeded with claude and opencode", () => {
@@ -634,7 +694,7 @@ describe("Seed", () => {
 
     // Verify no duplicates in the DB
     const agents = new AgentStore(db);
-    expect(agents.list()).toHaveLength(12);
+    expect(agents.list()).toHaveLength(4);
   });
 
   it("agent target configs are created for claude target", () => {
@@ -642,8 +702,8 @@ describe("Seed", () => {
     const targets = new TargetStore(db);
 
     const configs = targets.listAgentTargetConfigs("claude");
-    // Every agent should have a claude target config
-    expect(configs.length).toBe(12);
+    // Every agent should have a claude target config (4 agents)
+    expect(configs.length).toBe(4);
   });
 
   it("architect claude target config has correct disallowed tools", () => {
@@ -755,7 +815,7 @@ describe("Claude Renderer", () => {
     expect(() => renderer.renderAgent("nonexistent")).toThrow("Agent not found");
   });
 
-  it("renderInstructions includes skills and subagents", () => {
+  it("renderInstructions includes skills and enhanced skills", () => {
     const renderer = getRenderer("claude", db)!;
     const output = renderer.renderInstructions();
 
@@ -763,8 +823,10 @@ describe("Claude Renderer", () => {
     expect(output).toContain("Available Skills");
     expect(output).toContain("testing-strategies");
     expect(output).toContain("Custom Agents");
-    expect(output).toContain("debug");
+    // Enhanced skills listed instead of subagent names
+    expect(output).toContain("testing");
     expect(output).toContain("security");
+    expect(output).toContain("audit");
   });
 });
 
@@ -784,29 +846,29 @@ describe("OpenCode Renderer", () => {
 
   it("renderAgent produces frontmatter with description, mode, temperature", () => {
     const renderer = getRenderer("opencode", db)!;
-    const output = renderer.renderAgent("debug");
+    const output = renderer.renderAgent("worker");
 
     expect(output).toMatch(/^---\n/);
     expect(output).toContain("description:");
     expect(output).toContain("mode: subagent");
-    expect(output).toContain("temperature: 0.1");
+    expect(output).toContain("temperature: 0.2");
   });
 
   it("renderAgent includes tools block", () => {
     const renderer = getRenderer("opencode", db)!;
-    const output = renderer.renderAgent("debug");
+    const output = renderer.renderAgent("worker");
 
     expect(output).toContain("tools:");
     expect(output).toContain("  read: true");
-    expect(output).toContain("  write: false");
+    expect(output).toContain("  write: true");
   });
 
   it("renderAgent includes permission block with edit and bash patterns", () => {
     const renderer = getRenderer("opencode", db)!;
-    const output = renderer.renderAgent("debug");
+    const output = renderer.renderAgent("worker");
 
     expect(output).toContain("permission:");
-    expect(output).toContain("edit: deny");
+    expect(output).toContain("edit: allow");
     expect(output).toContain("bash:");
     // Patterns with wildcards or spaces should be quoted
     expect(output).toMatch(/"git status\*": allow/);
@@ -1209,10 +1271,10 @@ describe("SpavnEngine", () => {
     const result = engine.initialize();
 
     expect(result).not.toBeNull();
-    expect(result!.agents).toBe(12);
-    expect(result!.skills).toBe(17);
-    expect(result!.models).toBe(15);
-    expect(result!.targets).toBe(5);
+    expect(result!.agents).toBe(4);    // 3 primary + 1 worker
+    expect(result!.skills).toBe(44);   // 35 knowledge + 9 enhanced
+    expect(result!.models).toBe(13);
+    expect(result!.targets).toBe(5);   // 4 original + qwen
   });
 
   it("initialize returns null on second run (already seeded)", () => {
@@ -1226,7 +1288,7 @@ describe("SpavnEngine", () => {
     engine = new SpavnEngine(dbPath);
     engine.initialize();
     const agents = engine.listAgents();
-    expect(agents).toHaveLength(12);
+    expect(agents).toHaveLength(4);
   });
 
   it("listAgents filters by mode", () => {
@@ -1242,7 +1304,50 @@ describe("SpavnEngine", () => {
     engine = new SpavnEngine(dbPath);
     engine.initialize();
     const skills = engine.listSkills();
-    expect(skills).toHaveLength(17);
+    expect(skills).toHaveLength(44);  // 35 knowledge + 9 enhanced
+  });
+
+  it("listEnhancedSkills returns only enhanced skills", () => {
+    engine = new SpavnEngine(dbPath);
+    engine.initialize();
+    const enhanced = engine.listEnhancedSkills();
+    expect(enhanced).toHaveLength(9);
+    for (const s of enhanced) {
+      expect(s.kind).toBe("enhanced");
+    }
+  });
+
+  it("getSkillsForTrigger returns matching skills", () => {
+    engine = new SpavnEngine(dbPath);
+    engine.initialize();
+    const qgSkills = engine.getSkillsForTrigger("standard", "quality-gate");
+    expect(qgSkills.length).toBeGreaterThanOrEqual(3);
+    const ids = qgSkills.map((s) => s.id);
+    expect(ids).toContain("testing");
+    expect(ids).toContain("security");
+    expect(ids).toContain("audit");
+  });
+
+  it("getEffectiveAccess respects mode ceilings", () => {
+    engine = new SpavnEngine(dbPath);
+    engine.initialize();
+    // security has access_level: read-only, architect ceiling: read-only
+    expect(engine.getEffectiveAccess("security", "architect")).toBe("read-only");
+    // coder has access_level: write, implement ceiling: full
+    expect(engine.getEffectiveAccess("coder", "implement")).toBe("write");
+    // coder has access_level: write, architect ceiling: read-only
+    expect(engine.getEffectiveAccess("coder", "architect")).toBe("read-only");
+  });
+
+  it("getSkillWithLinked resolves linked skills", () => {
+    engine = new SpavnEngine(dbPath);
+    engine.initialize();
+    const result = engine.getSkillWithLinked("audit");
+    expect(result).not.toBeNull();
+    expect(result!.skill.id).toBe("audit");
+    expect(result!.linked.length).toBe(2);
+    const linkedIds = result!.linked.map((s) => s.id).sort();
+    expect(linkedIds).toEqual(["code-quality", "design-patterns"]);
   });
 
   it("listModels returns all models after initialization", () => {

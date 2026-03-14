@@ -971,8 +971,10 @@ AGENTS:
   Primary (architect, implement, fix):
     Handle complex tasks — select your best model.
 
-  Subagents (debug, coder, testing, security, devops, audit):
-    Handle focused tasks — a fast/cheap model works great.
+  Worker (worker):
+    Generic skill-driven executor. Loads enhanced skills (coder, testing,
+    security, etc.) and executes them with access-level constraints.
+    Supports multi-skill loading for framework-aware development.
 
 TOOLS (29):
   spavn_init, spavn_status      .spavn directory management
@@ -993,12 +995,21 @@ TOOLS (29):
   repl_init, repl_status          Iterative task-by-task implementation loop
   repl_report, repl_summary
 
-SKILLS (14):
-  frontend-development, backend-development, mobile-development,
-  desktop-development, database-design, api-design,
-  architecture-patterns, design-patterns, testing-strategies,
-  security-hardening, deployment-automation, performance-optimization,
-  code-quality, git-workflow
+SKILLS (44):
+  Knowledge (35):
+    frontend-development, backend-development, mobile-development,
+    desktop-development, database-design, api-design,
+    architecture-patterns, design-patterns, testing-strategies,
+    security-hardening, deployment-automation, performance-optimization,
+    code-quality, git-workflow, data-engineering, monitoring-observability,
+    ui-design, react-patterns, nextjs-patterns, vue-patterns,
+    nuxt-patterns, svelte-patterns, sveltekit-patterns, angular-patterns,
+    express-patterns, hono-patterns, fastify-patterns, nestjs-patterns,
+    laravel-patterns, django-patterns, electron-patterns, tauri-patterns,
+    react-native-patterns, flutter-patterns, spavn-ui
+  Enhanced (9):
+    coder, testing, security, audit, docs-writer,
+    perf, debug, devops, refactor
 `);
 }
 

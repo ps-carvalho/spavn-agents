@@ -11,7 +11,7 @@ import { SkillStore } from "./skills.js";
 import { ModelStore } from "./models.js";
 import { TargetStore } from "./targets.js";
 import { MODEL_REGISTRY } from "../registry.js";
-import type { AgentMode, PermissionLevel } from "./types.js";
+import type { AgentMode, PermissionLevel, SkillKind, AccessLevel, SkillTrigger, TriggerPhase } from "./types.js";
 
 // ---- Public interface ------------------------------------------------------
 
@@ -173,18 +173,66 @@ function seedSkills(store: SkillStore, opencodeDir: string): number {
 
     const raw = fs.readFileSync(skillFile, "utf-8");
     const parsed = parseFrontmatter(raw);
+    const fm = parsed?.frontmatter ?? {};
 
-    // Skills are served as-is, so content is the full file
+    const kind = (fm.kind as SkillKind) ?? "knowledge";
+    const isEnhanced = kind === "enhanced";
+
+    // For enhanced skills, split body into system_prompt (behavioral)
+    // and keep full raw as content. For knowledge skills, content is the full file.
+    let systemPrompt: string | null = null;
+    if (isEnhanced && parsed) {
+      systemPrompt = parsed.body.trim() || null;
+    }
+
+    // Parse trigger config from frontmatter
+    let triggerConfig: SkillTrigger | null = null;
+    const trigger = fm.trigger as Record<string, unknown> | undefined;
+    if (trigger && typeof trigger === "object") {
+      triggerConfig = {
+        scopes: Array.isArray(trigger.scopes)
+          ? (trigger.scopes as string[])
+          : typeof trigger.scopes === "string"
+            ? (trigger.scopes as string).split(",").map((s: string) => s.trim())
+            : undefined,
+        file_patterns: Array.isArray(trigger.file_patterns)
+          ? (trigger.file_patterns as string[])
+          : typeof trigger.file_patterns === "string"
+            ? (trigger.file_patterns as string).split(",").map((s: string) => s.trim())
+            : undefined,
+        phase: (trigger.phase as TriggerPhase) ?? undefined,
+      };
+    }
+
+    // Parse linked_skills
+    let linkedSkills: string[] | null = null;
+    const rawLinked = fm.linked_skills;
+    if (Array.isArray(rawLinked)) {
+      linkedSkills = rawLinked as string[];
+    } else if (typeof rawLinked === "string" && rawLinked.length > 0) {
+      linkedSkills = rawLinked.split(",").map((s) => s.trim());
+    }
+
     store.upsert({
       id: dir.name,
-      name: parsed?.frontmatter.name
-        ? String(parsed.frontmatter.name)
-        : dir.name,
-      description: parsed?.frontmatter.description
-        ? String(parsed.frontmatter.description)
-        : null,
+      name: fm.name ? String(fm.name) : dir.name,
+      description: fm.description ? String(fm.description) : null,
       content: raw,
+      kind,
+      temperature: fm.temperature !== undefined
+        ? parseFloat(String(fm.temperature))
+        : null,
+      access_level: (fm.access_level as AccessLevel) ?? null,
+      trigger_config: triggerConfig,
+      output_format: fm.output_format ? String(fm.output_format) : null,
+      linked_skills: linkedSkills,
+      system_prompt: systemPrompt,
     });
+
+    // Populate mode access for enhanced skills
+    if (isEnhanced && fm.access_level) {
+      store.populateModeAccess(dir.name);
+    }
 
     count++;
   }
@@ -480,15 +528,32 @@ function parseFrontmatter(content: string): ParsedFrontmatter | null {
 
 /**
  * Parse a scalar value from a YAML-like string.
- * Returns boolean, number, or string.
+ * Returns boolean, number, string, or string[] (for inline arrays).
  */
-function parseScalar(val: string): boolean | number | string {
+function parseScalar(val: string): boolean | number | string | string[] {
   // Remove surrounding quotes if present
   if (
     (val.startsWith('"') && val.endsWith('"')) ||
     (val.startsWith("'") && val.endsWith("'"))
   ) {
     return val.slice(1, -1);
+  }
+
+  // Inline YAML arrays: [a, b, c] or ["a", "b"]
+  if (val.startsWith("[") && val.endsWith("]")) {
+    const inner = val.slice(1, -1).trim();
+    if (inner === "") return [];
+    return inner.split(",").map((item) => {
+      const trimmed = item.trim();
+      // Strip surrounding quotes from each element
+      if (
+        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ) {
+        return trimmed.slice(1, -1);
+      }
+      return trimmed;
+    });
   }
 
   // Booleans

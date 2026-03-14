@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 const CREATE_TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS agents (
@@ -32,8 +32,22 @@ CREATE TABLE IF NOT EXISTS skills (
   name TEXT NOT NULL,
   description TEXT,
   content TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'knowledge',
+  temperature REAL DEFAULT NULL,
+  access_level TEXT DEFAULT NULL,
+  trigger_config TEXT DEFAULT NULL,
+  output_format TEXT DEFAULT NULL,
+  linked_skills TEXT DEFAULT NULL,
+  system_prompt TEXT DEFAULT NULL,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS skill_mode_access (
+  skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL,
+  effective_access TEXT NOT NULL,
+  PRIMARY KEY (skill_id, mode)
 );
 
 CREATE TABLE IF NOT EXISTS agent_skills (
@@ -132,9 +146,29 @@ export function initializeSchema(db: Database.Database): void {
       );
     }
 
-    // Future migrations would go here:
-    // if (version < 2) { migrateTo2(db); }
-    // if (version < 3) { migrateTo3(db); }
+    // ---- Migration v1 → v2: Enhanced skills ----
+    if (version >= 1 && version < 2) {
+      db.exec(`
+        ALTER TABLE skills ADD COLUMN kind TEXT NOT NULL DEFAULT 'knowledge';
+        ALTER TABLE skills ADD COLUMN temperature REAL DEFAULT NULL;
+        ALTER TABLE skills ADD COLUMN access_level TEXT DEFAULT NULL;
+        ALTER TABLE skills ADD COLUMN trigger_config TEXT DEFAULT NULL;
+        ALTER TABLE skills ADD COLUMN output_format TEXT DEFAULT NULL;
+        ALTER TABLE skills ADD COLUMN linked_skills TEXT DEFAULT NULL;
+        ALTER TABLE skills ADD COLUMN system_prompt TEXT DEFAULT NULL;
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS skill_mode_access (
+          skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+          mode TEXT NOT NULL,
+          effective_access TEXT NOT NULL,
+          PRIMARY KEY (skill_id, mode)
+        );
+      `);
+
+      db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(2);
+    }
   });
 
   migrate();

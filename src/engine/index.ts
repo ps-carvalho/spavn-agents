@@ -30,6 +30,10 @@ import type {
   AgentSkill,
   Skill,
   SkillInput,
+  SkillKind,
+  AccessLevel,
+  SkillTrigger,
+  TriggerPhase,
   CliTarget,
   AgentTargetConfig,
   Model,
@@ -46,6 +50,10 @@ export type {
   AgentSkill,
   Skill,
   SkillInput,
+  SkillKind,
+  AccessLevel,
+  SkillTrigger,
+  TriggerPhase,
   CliTarget,
   AgentTargetConfig,
   Model,
@@ -137,6 +145,26 @@ export class SpavnEngine {
 
   upsertSkill(skill: SkillInput): void {
     this._skills.upsert(skill);
+  }
+
+  /** List only enhanced skills (kind = 'enhanced'). */
+  listEnhancedSkills(): Skill[] {
+    return this._skills.listEnhanced();
+  }
+
+  /** Find enhanced skills matching a trigger scope and phase. */
+  getSkillsForTrigger(scope: string, phase: string): Skill[] {
+    return this._skills.getByTrigger(scope, phase);
+  }
+
+  /** Compute effective access by intersecting skill access_level with mode ceiling. */
+  getEffectiveAccess(skillId: string, mode: string): AccessLevel | null {
+    return this._skills.getEffectiveAccess(skillId, mode);
+  }
+
+  /** Return a skill plus its resolved linked knowledge skills. */
+  getSkillWithLinked(skillId: string): { skill: Skill; linked: Skill[] } | null {
+    return this._skills.getWithLinked(skillId);
   }
 
   getAgentSkills(agentId: string): AgentSkill[] {
