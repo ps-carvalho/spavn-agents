@@ -559,7 +559,7 @@ describe("Seed", () => {
   it("seedDatabase returns correct counts", () => {
     const result = seedDatabase(db, OPENCODE_DIR);
     expect(result.agents).toBe(4);    // 3 primary + 1 worker
-    expect(result.skills).toBe(26);   // 17 knowledge + 9 enhanced
+    expect(result.skills).toBe(44);   // 35 knowledge + 9 enhanced
     expect(result.models).toBe(13);
     expect(result.targets).toBe(4);
   });
@@ -605,7 +605,7 @@ describe("Seed", () => {
     const skills = new SkillStore(db);
     const allSkills = skills.list();
 
-    expect(allSkills.length).toBe(26);  // 17 knowledge + 9 enhanced
+    expect(allSkills.length).toBe(44);  // 35 knowledge + 9 enhanced
     for (const skill of allSkills) {
       expect(skill.content.length).toBeGreaterThan(0);
     }
@@ -875,7 +875,7 @@ describe("SpavnEngine", () => {
 
     expect(result).not.toBeNull();
     expect(result!.agents).toBe(4);    // 3 primary + 1 worker
-    expect(result!.skills).toBe(26);   // 17 knowledge + 9 enhanced
+    expect(result!.skills).toBe(44);   // 35 knowledge + 9 enhanced
     expect(result!.models).toBe(13);
     expect(result!.targets).toBe(4);
   });
@@ -907,7 +907,7 @@ describe("SpavnEngine", () => {
     engine = new SpavnEngine(dbPath);
     engine.initialize();
     const skills = engine.listSkills();
-    expect(skills).toHaveLength(26);  // 17 knowledge + 9 enhanced
+    expect(skills).toHaveLength(44);  // 35 knowledge + 9 enhanced
   });
 
   it("listEnhancedSkills returns only enhanced skills", () => {
