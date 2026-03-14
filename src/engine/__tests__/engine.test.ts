@@ -558,8 +558,8 @@ describe("Seed", () => {
 
   it("seedDatabase returns correct counts", () => {
     const result = seedDatabase(db, OPENCODE_DIR);
-    expect(result.agents).toBe(12);
-    expect(result.skills).toBe(17);
+    expect(result.agents).toBe(13);
+    expect(result.skills).toBe(35);
     expect(result.models).toBe(13);
     expect(result.targets).toBe(4);
   });
@@ -605,7 +605,7 @@ describe("Seed", () => {
     const skills = new SkillStore(db);
     const allSkills = skills.list();
 
-    expect(allSkills.length).toBe(17);
+    expect(allSkills.length).toBe(35);
     for (const skill of allSkills) {
       expect(skill.content.length).toBeGreaterThan(0);
     }
@@ -634,7 +634,7 @@ describe("Seed", () => {
 
     // Verify no duplicates in the DB
     const agents = new AgentStore(db);
-    expect(agents.list()).toHaveLength(12);
+    expect(agents.list()).toHaveLength(13);
   });
 
   it("agent target configs are created for claude target", () => {
@@ -643,7 +643,7 @@ describe("Seed", () => {
 
     const configs = targets.listAgentTargetConfigs("claude");
     // Every agent should have a claude target config
-    expect(configs.length).toBe(12);
+    expect(configs.length).toBe(13);
   });
 
   it("architect claude target config has correct disallowed tools", () => {
@@ -812,8 +812,8 @@ describe("SpavnEngine", () => {
     const result = engine.initialize();
 
     expect(result).not.toBeNull();
-    expect(result!.agents).toBe(12);
-    expect(result!.skills).toBe(17);
+    expect(result!.agents).toBe(13);
+    expect(result!.skills).toBe(35);
     expect(result!.models).toBe(13);
     expect(result!.targets).toBe(4);
   });
@@ -829,7 +829,7 @@ describe("SpavnEngine", () => {
     engine = new SpavnEngine(dbPath);
     engine.initialize();
     const agents = engine.listAgents();
-    expect(agents).toHaveLength(12);
+    expect(agents).toHaveLength(13);
   });
 
   it("listAgents filters by mode", () => {
@@ -845,7 +845,7 @@ describe("SpavnEngine", () => {
     engine = new SpavnEngine(dbPath);
     engine.initialize();
     const skills = engine.listSkills();
-    expect(skills).toHaveLength(17);
+    expect(skills).toHaveLength(35);
   });
 
   it("listModels returns all models after initialization", () => {

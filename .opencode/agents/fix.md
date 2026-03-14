@@ -137,9 +137,43 @@ Use `task_finalize` with:
 - Reproduce issues before attempting fixes
 - For complex issues, delegate diagnosis to @debug
 
-## Skill Loading (load based on issue type)
+## Skill Loading (MANDATORY — auto-detect + issue-specific)
 
-Before fixing, load relevant skills. Use the `skill` tool.
+Before fixing, **auto-detect the project's tech stack** and load relevant skills. Use the `skill` tool for each.
+
+### Step 1: Tech Stack Detection
+
+Scan the project root for dependency manifests:
+
+1. **Read `package.json`** (if exists) — scan `dependencies` + `devDependencies` keys
+2. **Read `composer.json`** (if exists) — scan `require` + `require-dev` keys
+3. **Read `requirements.txt` / `pyproject.toml`** (if exists) — scan package names
+4. **Read `Cargo.toml`** / `go.mod` / `pubspec.yaml` (if exists)
+
+### Step 2: Framework → Skill Mapping
+
+| Detected Dependency | Skills to Load |
+|---------------------|---------------|
+| `react` | `frontend-development` + `react-patterns` |
+| `next` | `frontend-development` + `react-patterns` + `nextjs-patterns` |
+| `vue` | `frontend-development` + `vue-patterns` |
+| `nuxt` | `frontend-development` + `vue-patterns` + `nuxt-patterns` |
+| `svelte` | `frontend-development` + `svelte-patterns` |
+| `@sveltejs/kit` | `frontend-development` + `svelte-patterns` + `sveltekit-patterns` |
+| `@angular/core` | `frontend-development` + `angular-patterns` |
+| `@spavn/ui` | `frontend-development` + `vue-patterns` + `spavn-ui` + `ui-design` |
+| `electron` | `desktop-development` + `electron-patterns` |
+| `@tauri-apps/api` | `desktop-development` + `tauri-patterns` |
+| `react-native` | `mobile-development` + `react-native-patterns` |
+| `express` | `backend-development` + `express-patterns` |
+| `hono` | `backend-development` + `hono-patterns` |
+| `fastify` | `backend-development` + `fastify-patterns` |
+| `@nestjs/core` | `backend-development` + `nestjs-patterns` |
+| `laravel/framework` (composer.json) | `backend-development` + `laravel-patterns` |
+| `django` (requirements.txt/pyproject.toml) | `backend-development` + `django-patterns` |
+| `flutter` (pubspec.yaml) | `mobile-development` + `flutter-patterns` |
+
+### Step 3: Issue-Specific Skills (additional)
 
 | Issue Type | Skill to Load |
 |-----------|--------------|
@@ -147,11 +181,17 @@ Before fixing, load relevant skills. Use the `skill` tool.
 | Security vulnerability | `security-hardening` |
 | Test failures, flaky tests | `testing-strategies` |
 | Git issues | `git-workflow` |
-| API errors | `api-design` + `backend-development` |
+| API errors | `api-design` |
 | Database issues | `database-design` |
-| Frontend rendering issues | `frontend-development` |
 | UI visual bugs, layout issues, design inconsistencies | `ui-design` (**must check `.spavn/design-spec.md` first** — create if missing) |
 | Deployment or CI/CD failures | `deployment-automation` |
+
+### Step 4: Pass Skills to Workers
+
+When delegating to `@debug` or `@coder` workers, include the resolved framework-specific skills:
+```
+Task(subagent_type="worker", prompt="Load skills: coder, react-patterns, nextjs-patterns. Bug: [description]. Fix: [approach]. Files: [list].")
+```
 
 ## Debugging Quick Reference
 

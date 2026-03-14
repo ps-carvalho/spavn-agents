@@ -123,57 +123,98 @@ Use the **question tool** with these options:
 - **User chose "Create branch"**: Use `branch_create` with the suggested branch name (or custom name)
 - **User chose "Continue"**: Proceed with caution, warn user about risks
 
-### Step 6: REPL Implementation Loop
+### Step 6: REPL Implementation Loop (Batch-Parallel Execution)
 
-Implement plan tasks iteratively using the REPL loop. Each task goes through a **Read → Eval → Print → Loop** cycle with per-task build+test verification.
+Implement plan tasks using **dependency-aware batch-parallel execution**. Independent tasks run as parallel workers; dependent tasks are queued sequentially.
 
 **Session recovery:** Run `repl_resume` first to check for an interrupted loop from a previous session. If found, it will show progress and the interrupted task — skip to 6b to continue.
 
 **If no plan was loaded in Step 3**, delegate the user's request to `@coder` via the Task tool (skip to 6c without the loop tools) and proceed to Step 7 when done.
 
-**ALL implementation tasks are delegated to `@coder`.** The implement agent does NOT write code directly. For every task, prepare context and launch `@coder` via the Task tool (see Step 6c).
+**ALL implementation tasks are delegated to `@coder`.** The implement agent does NOT write code directly.
 
-#### 6a: Initialize the Loop
-Run `repl_init` with the plan filename from Step 3.
-Review the auto-detected build/test commands. If they look wrong, re-run with manual overrides.
+#### 6a: Initialize the Loop + Dependency Analysis
+1. Run `repl_init` with the plan filename from Step 3.
+2. Review the auto-detected build/test commands. If they look wrong, re-run with manual overrides.
+3. **Analyze task dependencies** to create execution batches:
+   - Read all plan tasks and their descriptions/ACs
+   - For each task, identify which files/modules it will touch
+   - **Independent tasks** (touch different files/modules) → group into the same batch
+   - **Dependent tasks** (touch same files, or one references another's output) → place in later batches
+   - **When uncertain** about dependencies, default to sequential (safer)
+   - Maximum **3-4 concurrent workers** per batch to avoid overwhelming the system
+
+Example batch plan:
+```
+Batch 1: [Task 1, Task 3, Task 5] — independent, different modules
+Batch 2: [Task 2, Task 4] — depend on Batch 1 outputs
+Batch 3: [Task 6] — depends on Task 4
+```
 
 #### 6b: Check Loop Status
-Run `repl_status` to see the next pending task, current progress, build/test commands, and acceptance criteria (ACs) for the current task. Implement to satisfy all listed ACs.
+Run `repl_status` to see the current batch progress, pending tasks, build/test commands, and acceptance criteria.
 
-#### 6c: Delegate to @coder Sub-Agent
-Prepare context from `repl_status` output and launch `@coder` via the Task tool:
-1. **Gather context** — Task title, description, acceptance criteria, relevant files, and build/test commands from the `repl_status` output
-2. **Include cross-task context** — List files created or modified by previous tasks so `@coder` can maintain consistency
-3. **Launch `@coder`** — Pass all gathered context via the Task tool
-4. **Review the summary** — When `@coder` returns, review its implementation summary before proceeding to 6d (verification)
+#### 6c: Delegate to @coder Sub-Agents (Parallel Batch)
 
-#### 6d: Verify — Build + Test
-Run the build command (from repl_status output) via bash.
-If build passes, run the test command via bash.
-You can scope tests to relevant files during the loop (e.g., `npx vitest run src/tools/repl.test.ts`).
+For each task in the current batch, prepare context and launch `@coder` via the Task tool. **Launch ALL tasks in the batch in a SINGLE message for parallel execution.**
+
+For each worker, include:
+1. **Task context** — Title, description, acceptance criteria from `repl_status`
+2. **Skills** — `Load skills: coder, {task-relevant-framework-skills}` (see Smart Skill Passing below)
+3. **Cross-task context** — Files created/modified by previous batches
+4. **Build/test commands** — From repl_status output
+
+```
+# Launch entire batch in parallel:
+Task(subagent_type="worker", prompt="Load skills: coder, react-patterns. Task: [title]. AC: [criteria]. Files: [list]. Build: npm run build. Test: npx vitest run")
+Task(subagent_type="worker", prompt="Load skills: coder, express-patterns. Task: [title]. AC: [criteria]. Files: [list]. Build: npm run build. Test: npx vitest run")
+Task(subagent_type="worker", prompt="Load skills: coder, database-design. Task: [title]. AC: [criteria]. Files: [list]. Build: npm run build. Test: npx vitest run")
+```
+
+**Smart Skill Passing**: Each worker receives only the skills relevant to its specific task:
+- A frontend task gets: `coder` + `react-patterns` (or `vue-patterns`, etc.)
+- A backend task gets: `coder` + `express-patterns` (or `hono-patterns`, etc.)
+- A database task gets: `coder` + `database-design`
+- A UI task gets: `coder` + `ui-design` + framework-specific skill (e.g., `spavn-ui`)
+- Never pass all detected stack skills to every worker — only what's relevant to the task
+
+Skill relevance is determined by:
+1. The task's file paths (e.g., `src/components/` → frontend skills, `src/api/` → backend skills)
+2. The task's description keywords (e.g., "database migration" → `database-design`)
+3. The resolved skill list from the Skill Loading step
+
+#### 6d: Verify — Build + Test (Per-Batch)
+After ALL workers in a batch complete:
+1. Run the build command via bash
+2. If build passes, run the test command via bash
+3. You can scope tests to relevant files during the loop
+
+**Verification happens per-batch, not per-task.** This reduces build/test cycles while still catching issues early.
 
 #### 6e: Report the Outcome
-Run `repl_report` with the result:
-- **pass** — build + tests green. Include a brief summary of test output.
-- **fail** — something broke. Include the error message or failing test output.
-- **skip** — task should be deferred. Include the reason.
+Run `repl_report` for each task in the batch with the result:
+- **pass** — build + tests green after this batch. Include brief summary.
+- **fail** — something broke. Include error message and which task likely caused it.
+- **skip** — task should be deferred. Include reason.
 
 #### 6f: Loop Decision
 Based on the repl_report response:
-- **"Next: Task #N"** → Go to 6b (pick up next task)
-- **"Fix the issue, N retries remaining"** → Re-launch `@coder` with: the original task description, error output from the failed build/test, and a summary of the previous `@coder` attempt. Then go to 6d (re-verify)
+- **"Next batch"** → Go to 6b (pick up next batch of tasks)
+- **"Fix the issue, N retries remaining"** → Re-launch the failing task's `@coder` with: the original task description, error output, and previous attempt summary. Then go to 6d (re-verify the batch)
 - **"ASK THE USER"** → Use the question tool:
   "Task #N has failed after 3 attempts. How would you like to proceed?"
   Options:
   1. **Let me fix it manually** — Pause, user makes changes, then resume
-  2. **Skip this task** — Mark as skipped, continue with next task
+  2. **Skip this task** — Mark as skipped, continue with next batch
   3. **Abort the loop** — Stop implementation, proceed to quality gate with partial results
 - **"All tasks complete"** → Exit loop, proceed to Step 7
 
 #### Loop Safeguards
 - **Max 3 retries per task** (configurable via repl_init)
+- **Max 3-4 concurrent workers per batch** to avoid context/resource exhaustion
 - **If build fails 3 times in a row on DIFFERENT tasks**, pause and ask user (likely a systemic issue)
 - **Always run build before tests** — don't waste time testing broken code
+- **Conservative batching** — when file dependencies are unclear, default to sequential
 
 ### Step 7: Quality Gate — Two-Phase Sub-Agent Review (MANDATORY)
 
@@ -344,26 +385,81 @@ If yes, use `worktree_remove` with the worktree name. Do NOT delete the branch (
 - Follow the conventions already established in the codebase
 - Prefer immutability and pure functions where practical
 
-## Skill Loading (MANDATORY — before implementation)
+## Skill Loading (MANDATORY — auto-detect before implementation)
 
-Detect the project's technology stack and load relevant skills BEFORE writing code. Use the `skill` tool to load each one.
+Before writing any code, **auto-detect the project's tech stack** and load relevant skills. Use the `skill` tool for each.
+
+### Step 1: Check Plan for Pre-Detected Stack
+
+If a plan was loaded in Step 3, check for a `## Detected Stack` section. If present, use the listed skills directly — skip re-detection.
+
+### Step 2: Tech Stack Detection (if no plan or no detected stack)
+
+Scan the project root for dependency manifests and map frameworks to skills:
+
+1. **Read `package.json`** (if exists) — scan `dependencies` + `devDependencies` keys
+2. **Read `composer.json`** (if exists) — scan `require` + `require-dev` keys
+3. **Read `requirements.txt` / `pyproject.toml`** (if exists) — scan package names
+4. **Read `Cargo.toml`** (if exists) — scan `[dependencies]`
+5. **Read `go.mod`** (if exists) — scan `require` block
+6. **Read `pubspec.yaml`** (if exists) — scan `dependencies`
+
+### Step 3: Framework → Skill Mapping
+
+Map detected frameworks to skills. Load the **general category skill first**, then the **framework-specific skill**.
+
+| Detected Dependency | Skills to Load |
+|---------------------|---------------|
+| `react` | `frontend-development` + `react-patterns` |
+| `next` | `frontend-development` + `react-patterns` + `nextjs-patterns` |
+| `vue` | `frontend-development` + `vue-patterns` |
+| `nuxt` | `frontend-development` + `vue-patterns` + `nuxt-patterns` |
+| `svelte` | `frontend-development` + `svelte-patterns` |
+| `@sveltejs/kit` | `frontend-development` + `svelte-patterns` + `sveltekit-patterns` |
+| `@angular/core` | `frontend-development` + `angular-patterns` |
+| `@spavn/ui` | `frontend-development` + `vue-patterns` + `spavn-ui` + `ui-design` |
+| `electron` | `desktop-development` + `electron-patterns` |
+| `@tauri-apps/api` | `desktop-development` + `tauri-patterns` |
+| `react-native` | `mobile-development` + `react-native-patterns` |
+| `express` | `backend-development` + `express-patterns` |
+| `hono` | `backend-development` + `hono-patterns` |
+| `fastify` | `backend-development` + `fastify-patterns` |
+| `@nestjs/core` | `backend-development` + `nestjs-patterns` |
+| `laravel/framework` (composer.json) | `backend-development` + `laravel-patterns` |
+| `django` (requirements.txt/pyproject.toml) | `backend-development` + `django-patterns` |
+| `flutter` (pubspec.yaml) | `mobile-development` + `flutter-patterns` |
+
+### Step 4: Task-Topic Skills (additional)
 
 | Signal | Skill to Load |
 |--------|--------------|
-| `package.json` has react/next/vue/nuxt/svelte/angular | `frontend-development` |
 | UI work: new pages, components, visual design, layout | `ui-design` (**must check `.spavn/design-spec.md` first** — create if missing) |
-| `package.json` has express/fastify/hono/nest OR Python with flask/django/fastapi | `backend-development` |
 | Database files: `migrations/`, `schema.prisma`, `models.py`, `*.sql` | `database-design` |
 | API routes, OpenAPI spec, GraphQL schema | `api-design` |
-| React Native, Flutter, iOS/Android project files | `mobile-development` |
-| Electron, Tauri, or native desktop project files | `desktop-development` |
-| Performance-related task (optimization, profiling, caching) | `performance-optimization` |
+| Performance-related task | `performance-optimization` |
 | Refactoring or code cleanup task | `code-quality` |
-| Complex git workflow or branching question | `git-workflow` |
-| Architecture decisions (microservices, monolith, patterns) | `architecture-patterns` |
-| Design pattern selection (factory, strategy, observer, etc.) | `design-patterns` |
+| Architecture decisions | `architecture-patterns` |
+| Design pattern selection | `design-patterns` |
 
-Load **multiple skills** if the task spans domains (e.g., fullstack feature → `frontend-development` + `backend-development` + `api-design`).
+### Step 5: Store Resolved Skills
+
+Keep the full list of resolved skills (e.g., `["frontend-development", "react-patterns", "nextjs-patterns"]`) for passing to workers during delegation.
+
+### spavn-ui MCP Recommendation
+
+If `@spavn/ui` is detected in dependencies, recommend running the spavn-ui MCP server alongside spavn-agents for component search and code generation. Configuration:
+```json
+{
+  "mcpServers": {
+    "spavn-ui": {
+      "command": "npx",
+      "args": ["@spavn/mcp-server"]
+    }
+  }
+}
+```
+
+Load **multiple skills** if the task spans domains (e.g., fullstack feature → `frontend-development` + `react-patterns` + `backend-development` + `express-patterns` + `api-design`).
 
 ## Error Recovery
 
