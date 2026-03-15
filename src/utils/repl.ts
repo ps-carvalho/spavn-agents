@@ -16,7 +16,7 @@ import * as path from "path";
 
 const SPAVN_DIR = ".spavn";
 const REPL_STATE_FILE = "repl-state.json";
-const REPL_STATE_VERSION = 1;
+const REPL_STATE_VERSION = 2;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -48,6 +48,21 @@ export interface ReplTask {
   startedAt?: string;
   /** ISO timestamp when the task was completed/failed/skipped */
   completedAt?: string;
+  /** Zero-based indices of tasks this task depends on (must complete before this starts) */
+  dependsOn?: number[];
+  /** Batch group ID — tasks in the same batch can run in parallel */
+  batchId?: number;
+  /** Worker session ID for tracking which parallel worker handles this task */
+  workerId?: string;
+}
+
+export interface TaskBatch {
+  /** Batch identifier (0-based, sequential) */
+  id: number;
+  /** Zero-based task indices in this batch */
+  taskIndices: number[];
+  /** Batch execution status */
+  status: "pending" | "in_progress" | "completed";
 }
 
 export interface ReplState {
@@ -71,6 +86,10 @@ export interface ReplState {
   currentTaskIndex: number;
   /** All tasks in the loop */
   tasks: ReplTask[];
+  /** Multiple tasks can be in_progress simultaneously (parallel batches) */
+  activeTaskIndices?: number[];
+  /** Computed batch groups for parallel execution */
+  batches?: TaskBatch[];
 }
 
 export interface SpavnConfig {
@@ -95,6 +114,8 @@ export interface CommandDetection {
 export interface ParsedTask {
   description: string;
   acceptanceCriteria: string[];
+  /** Zero-based indices of tasks this task depends on. Empty if no dependencies. */
+  dependsOn: number[];
 }
 
 /**
@@ -128,6 +149,21 @@ export function parseTasksWithAC(planContent: string): ParsedTask[] {
       description = description.replace(/^Task\s+\d+\s*:\s*/i, "");
       if (!description) continue;
 
+      // Extract dependency markers: (depends: 1, 3) or (depends: 1)
+      const depsMatch = description.match(/\(depends:\s*([^)]+)\)\s*$/);
+      let dependsOn: number[] = [];
+      if (depsMatch) {
+        // Remove the dependency marker from the description
+        description = description.replace(/\s*\(depends:\s*[^)]+\)\s*$/, "").trim();
+        // Parse 1-based indices to 0-based
+        dependsOn = depsMatch[1]
+          .split(",")
+          .map(s => s.trim())
+          .filter(s => /^\d+$/.test(s))
+          .map(s => parseInt(s, 10) - 1)  // Convert to 0-based
+          .filter(idx => idx >= 0);        // Filter out invalid (0 or negative after conversion)
+      }
+
       // Collect AC lines immediately following this task
       const acs: string[] = [];
       for (let j = i + 1; j < lines.length; j++) {
@@ -146,8 +182,13 @@ export function parseTasksWithAC(planContent: string): ParsedTask[] {
         }
       }
 
-      tasks.push({ description, acceptanceCriteria: acs });
+      tasks.push({ description, acceptanceCriteria: acs, dependsOn });
     }
+  }
+
+  // Validate dependency references — filter out-of-range indices (warn but don't break)
+  for (const task of tasks) {
+    task.dependsOn = task.dependsOn.filter(idx => idx < tasks.length);
   }
 
   return tasks;
@@ -400,7 +441,19 @@ export function readReplState(cwd: string): ReplState | null {
 
     // Migrate from v0 (no version field) to v1
     if (typeof raw.version !== "number") {
-      raw.version = REPL_STATE_VERSION;
+      raw.version = 1;
+    }
+
+    // Migrate from v1 to v2: add batch support fields
+    if (raw.version === 1) {
+      raw.version = 2;
+      // Backfill dependsOn from ParsedTask if missing
+      for (const task of raw.tasks) {
+        if (!Array.isArray(task.dependsOn)) {
+          task.dependsOn = [];
+        }
+      }
+      // activeTaskIndices and batches are optional — will be computed on next repl_init
     }
 
     // Reject state from a newer version we don't understand
@@ -475,6 +528,92 @@ export function isLoopComplete(state: ReplState): boolean {
   );
 }
 
+// ─── Batch Computation ───────────────────────────────────────────────────────
+
+/**
+ * Compute execution batches from task dependencies using topological sort.
+ * Tasks with no unresolved dependencies are grouped into the same batch
+ * and can execute in parallel. Each batch must complete before the next starts.
+ *
+ * @throws Error if circular dependencies are detected
+ */
+export function computeBatches(tasks: ReplTask[]): TaskBatch[] {
+  const n = tasks.length;
+  if (n === 0) return [];
+
+  // Build adjacency: inDegree[i] = number of tasks that must complete before task i
+  const inDegree = new Array(n).fill(0);
+  const dependents: number[][] = Array.from({ length: n }, () => []);
+
+  for (let i = 0; i < n; i++) {
+    const deps = tasks[i].dependsOn ?? [];
+    for (const dep of deps) {
+      if (dep >= 0 && dep < n && dep !== i) {
+        inDegree[i]++;
+        dependents[dep].push(i);
+      }
+    }
+  }
+
+  // Level-based BFS (Kahn's algorithm variant)
+  const batches: TaskBatch[] = [];
+  const assigned = new Set<number>();
+  let batchId = 0;
+
+  while (assigned.size < n) {
+    // Find all tasks with in-degree 0 that haven't been assigned
+    const ready: number[] = [];
+    for (let i = 0; i < n; i++) {
+      if (!assigned.has(i) && inDegree[i] === 0) {
+        ready.push(i);
+      }
+    }
+
+    if (ready.length === 0) {
+      // Remaining tasks form a cycle
+      const remaining = Array.from({ length: n }, (_, i) => i).filter(i => !assigned.has(i));
+      throw new Error(
+        `Circular dependency detected among tasks: ${remaining.map(i => `#${i + 1}`).join(", ")}`
+      );
+    }
+
+    // Create batch with all ready tasks
+    batches.push({
+      id: batchId,
+      taskIndices: ready,
+      status: "pending",
+    });
+
+    // Mark assigned and reduce in-degrees
+    for (const idx of ready) {
+      assigned.add(idx);
+      tasks[idx].batchId = batchId;
+      for (const dep of dependents[idx]) {
+        inDegree[dep]--;
+      }
+    }
+
+    batchId++;
+  }
+
+  return batches;
+}
+
+/**
+ * Get all tasks that are ready to execute (dependencies satisfied, status pending).
+ * Returns an empty array if no tasks are ready.
+ */
+export function getReadyTasks(state: ReplState): ReplTask[] {
+  return state.tasks.filter((task) => {
+    if (task.status !== "pending") return false;
+    const deps = task.dependsOn ?? [];
+    return deps.every((depIdx) => {
+      const depTask = state.tasks[depIdx];
+      return depTask && (depTask.status === "passed" || depTask.status === "skipped");
+    });
+  });
+}
+
 // ─── Formatting ──────────────────────────────────────────────────────────────
 
 /**
@@ -540,11 +679,34 @@ export function formatProgress(state: ReplState): string {
   lines.push(`Progress: ${progressBar(done, total)} ${done}/${total} tasks (${pct}%)`);
   lines.push(`  Passed: ${passed}  |  Failed: ${failed}  |  Skipped: ${skipped}  |  Pending: ${pending}`);
 
-  // Current or next task
+  // Batch info
+  if (state.batches && state.batches.length > 0) {
+    const completedBatches = state.batches.filter(b =>
+      b.taskIndices.every(idx => {
+        const t = state.tasks[idx];
+        return t.status === "passed" || t.status === "failed" || t.status === "skipped";
+      })
+    ).length;
+    lines.push(`  Batches: ${completedBatches}/${state.batches.length} complete`);
+  }
+
+  // Active tasks (may be multiple in parallel batch)
+  const activeTasks = state.tasks.filter(t => t.status === "in_progress");
   const current = getCurrentTask(state);
   const next = getNextTask(state);
 
-  if (current) {
+  if (activeTasks.length > 1) {
+    lines.push("");
+    lines.push(`Current Batch (${activeTasks.length} parallel tasks):`);
+    for (const at of activeTasks) {
+      lines.push(`  Task #${at.index + 1}: "${at.description}"${at.retries > 0 ? ` (attempt ${at.retries + 1}/${state.maxRetries})` : ""}`);
+      if (at.acceptanceCriteria.length > 0) {
+        for (const ac of at.acceptanceCriteria) {
+          lines.push(`    - ${ac}`);
+        }
+      }
+    }
+  } else if (current) {
     lines.push("");
     lines.push(`Current Task (#${current.index + 1}):`);
     lines.push(`  "${current.description}"`);

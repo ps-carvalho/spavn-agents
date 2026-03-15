@@ -27,8 +27,11 @@ import {
   detectIncompleteState,
   formatProgress,
   formatSummary,
+  computeBatches,
+  getReadyTasks,
   type ReplState,
   type ReplTask,
+  type TaskBatch,
 } from "./utils/repl.js";
 import {
   parseFrontmatter as parsePlanFrontmatter,
@@ -45,6 +48,13 @@ import {
   coordinateAssignSkills,
   coordinateStatus,
 } from "./tools/coordinate.js";
+import {
+  executePlanStart,
+  executePlanInterview,
+  executePlanApprove,
+  executePlanEdit,
+} from "./tools/plan.js";
+import { SpavnCodeBridge } from "./utils/spavn-code-bridge.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -78,6 +88,10 @@ export async function startMCPServer(): Promise<void> {
   // Get the current working directory as the worktree root
   const worktree = process.cwd();
 
+  // ── Spavn Code bridge (fire-and-forget, no-op outside Spavn Code) ──
+  const bridge = new SpavnCodeBridge();
+  let bridgeFirstCall = true;
+
   function ok(text: string) {
     return { content: [{ type: "text" as const, text }] };
   }
@@ -85,6 +99,35 @@ export async function startMCPServer(): Promise<void> {
   function err(error: unknown) {
     const msg = error instanceof Error ? error.message : String(error);
     return { content: [{ type: "text" as const, text: `Error: ${msg}` }], isError: true as const };
+  }
+
+  /**
+   * Wrap a tool handler to emit SpavnCodeBridge events.
+   * - Fires `taskStarted` on the very first tool call
+   * - Fires `toolCall` for every invocation
+   * - Fires `error` if the tool returns an error result
+   */
+  function bridgeTool<T>(
+    toolName: string,
+    handler: (args: T) => Promise<{ content: { type: "text"; text: string }[]; isError?: true }>,
+  ) {
+    return async (args: T) => {
+      if (bridgeFirstCall) {
+        bridge.taskStarted();
+        bridgeFirstCall = false;
+      }
+      bridge.toolCall(toolName, toolName, args);
+
+      const result = await handler(args);
+
+      // Check for error results
+      const text = result.content[0]?.text ?? "";
+      if (text.startsWith("✗") || result.isError) {
+        bridge.error(text.split("\n")[0].substring(0, 200));
+      }
+
+      return result;
+    };
   }
 
   // ─── Spavn tools ────────────────────────────────────────────────────────────
@@ -426,7 +469,7 @@ export async function startMCPServer(): Promise<void> {
       type: z.enum(["feature", "bugfix", "refactor", "architecture", "spike", "docs"]).describe("Plan type"),
       content: z.string().describe("Full plan content in markdown"),
     },
-    async ({ title, type, content }) => {
+    bridgeTool("plan_save", async ({ title, type, content }) => {
       const plansPath = path.join(worktree, ".spavn", "plans");
 
       try {
@@ -442,7 +485,7 @@ export async function startMCPServer(): Promise<void> {
       } catch (error) {
         return err(error);
       }
-    },
+    }),
   );
 
   mcpServer.tool(
@@ -473,7 +516,7 @@ export async function startMCPServer(): Promise<void> {
     {
       planFilename: z.string().describe("Plan filename from .spavn/plans/"),
     },
-    async ({ planFilename }) => {
+    bridgeTool("plan_commit", async ({ planFilename }) => {
       try {
         await exec("git", ["rev-parse", "--git-dir"], { cwd: worktree });
       } catch {
@@ -530,7 +573,7 @@ export async function startMCPServer(): Promise<void> {
       } catch (error) {
         return err(error);
       }
-    },
+    }),
   );
 
   // ─── Plan workflow tools (Phase 2) ──────────────────────────────────────────
@@ -543,48 +586,9 @@ export async function startMCPServer(): Promise<void> {
       type: z.enum(["feature", "bugfix", "refactor", "architecture", "spike", "docs"]).describe("Plan type"),
       issueRef: z.number().optional().describe("GitHub issue number to reference"),
     },
-    async ({ title, type, issueRef }) => {
-      const plansPath = path.join(worktree, ".spavn", "plans");
-      fs.mkdirSync(plansPath, { recursive: true });
-
-      const date = new Date().toISOString().split("T")[0];
-      const slug = title.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").substring(0, 50);
-      const filename = `${date}-${type}-${slug}.md`;
-      const filepath = path.join(plansPath, filename);
-
-      const issueRefLine = issueRef ? `\nissue: ${issueRef}` : "";
-
-      const content = `---
-title: "${title}"
-type: ${type}
-created: ${new Date().toISOString()}
-status: draft${issueRefLine}
----
-
-# ${title}
-
-## Context
-
-<!-- Describe the problem or opportunity -->
-
-## Approach
-
-<!-- Outline the technical approach -->
-
-## Tasks
-
-- [ ] <!-- Task 1 -->
-- [ ] <!-- Task 2 -->
-- [ ] <!-- Task 3 -->
-
-## Risks
-
-<!-- Identify potential risks -->
-`;
-
-      fs.writeFileSync(filepath, content);
-      return ok(`✓ Plan skeleton created: ${filename}\n\nEdit the plan, then use plan_interview to refine and plan_approve when ready.`);
-    },
+    bridgeTool("plan_start", async ({ title, type, issueRef }) => {
+      return ok(executePlanStart(worktree, { title, type, issueRef }));
+    }),
   );
 
   mcpServer.tool(
@@ -596,23 +600,7 @@ status: draft${issueRefLine}
       answer: z.string().describe("Answer to the question"),
     },
     async ({ planFilename, question, answer }) => {
-      const filepath = path.join(worktree, ".spavn", "plans", planFilename);
-
-      if (!fs.existsSync(filepath)) {
-        return ok(`✗ Plan not found: ${planFilename}`);
-      }
-
-      const content = fs.readFileSync(filepath, "utf-8");
-
-      // Check it's still draft
-      if (!content.includes("status: draft")) {
-        return ok(`✗ Plan is not in draft status. Only draft plans can be refined.`);
-      }
-
-      const qaSection = `\n\n### Q: ${question}\n\n${answer}\n`;
-      fs.writeFileSync(filepath, content + qaSection);
-
-      return ok(`✓ Refinement added to ${planFilename}`);
+      return ok(executePlanInterview(worktree, { planFilename, question, answer }));
     },
   );
 
@@ -622,24 +610,21 @@ status: draft${issueRefLine}
     {
       planFilename: z.string().describe("Plan filename from .spavn/plans/"),
     },
-    async ({ planFilename }) => {
-      const filepath = path.join(worktree, ".spavn", "plans", planFilename);
+    bridgeTool("plan_approve", async ({ planFilename }) => {
+      return ok(executePlanApprove(worktree, { planFilename }));
+    }),
+  );
 
-      if (!fs.existsSync(filepath)) {
-        return ok(`✗ Plan not found: ${planFilename}`);
-      }
-
-      let content = fs.readFileSync(filepath, "utf-8");
-
-      if (!content.includes("status: draft")) {
-        return ok(`✗ Plan is not in draft status.`);
-      }
-
-      content = content.replace("status: draft", "status: approved");
-      fs.writeFileSync(filepath, content);
-
-      return ok(`✓ Plan approved: ${planFilename}\n\nReady for coordinate_tasks to break into assignments.`);
+  mcpServer.tool(
+    "plan_edit",
+    "Edit a plan file: overwrite content while preserving/updating frontmatter updated timestamp",
+    {
+      filename: z.string().describe("Plan filename from .spavn/plans/"),
+      content: z.string().describe("New plan content"),
     },
+    bridgeTool("plan_edit", async ({ filename, content }) => {
+      return ok(executePlanEdit(worktree, { filename, content }));
+    }),
   );
 
   // ─── Session tools ──────────────────────────────────────────────────────────
@@ -1054,7 +1039,7 @@ status: draft${issueRefLine}
       testCommand: z.string().optional().describe("Override auto-detected test command"),
       maxRetries: z.number().optional().describe("Max retries per failing task (default: 3)"),
     },
-    async (args) => {
+    bridgeTool("repl_init", async (args) => {
       const config = readSpavnConfig(worktree);
       const { planFilename, buildCommand, testCommand, maxRetries = config.maxRetries ?? 3 } = args;
 
@@ -1083,13 +1068,22 @@ status: draft${issueRefLine}
         index: i,
         description: parsed.description,
         acceptanceCriteria: parsed.acceptanceCriteria,
+        dependsOn: parsed.dependsOn,
         status: "pending" as const,
         retries: 0,
         iterations: [],
       }));
 
+      // Compute execution batches from task dependencies
+      let batches: TaskBatch[] | undefined;
+      try {
+        batches = computeBatches(tasks);
+      } catch (batchErr: any) {
+        return ok(`✗ Error: ${batchErr.message}`);
+      }
+
       const state: ReplState = {
-        version: 1,
+        version: 2,
         planFilename,
         startedAt: new Date().toISOString(),
         buildCommand: finalBuild,
@@ -1097,13 +1091,19 @@ status: draft${issueRefLine}
         lintCommand: detected.lintCommand,
         maxRetries,
         currentTaskIndex: -1,
+        activeTaskIndices: [],
         tasks,
+        batches,
       };
 
       writeReplState(worktree, state);
 
-      return ok(`✓ REPL loop initialized\n\nPlan: ${planFilename}\nTasks: ${tasks.length}\nBuild: ${finalBuild || "(none)"}\nTest: ${finalTest || "(none)"}\n\nFirst task (#1):\n  "${tasks[0].description}"`);
-    },
+      const batchInfo = batches && batches.length > 0
+        ? `\nBatches: ${batches.length} (first batch: ${batches[0].taskIndices.length} parallel task${batches[0].taskIndices.length > 1 ? "s" : ""})`
+        : "";
+
+      return ok(`✓ REPL loop initialized\n\nPlan: ${planFilename}\nTasks: ${tasks.length}${batchInfo}\nBuild: ${finalBuild || "(none)"}\nTest: ${finalTest || "(none)"}\n\nFirst task (#1):\n  "${tasks[0].description}"`);
+    }),
   );
 
   mcpServer.tool(
@@ -1114,13 +1114,18 @@ status: draft${issueRefLine}
       const state = readReplState(worktree);
       if (!state) return ok("✗ No REPL loop active. Run repl_init first.");
 
+      // Auto-advance: if no tasks are in_progress, promote the next ready batch
       const current = getCurrentTask(state);
       if (!current && !isLoopComplete(state)) {
-        const next = getNextTask(state);
-        if (next) {
-          next.status = "in_progress";
-          next.startedAt = new Date().toISOString();
-          state.currentTaskIndex = next.index;
+        const ready = getReadyTasks(state);
+        if (ready.length > 0) {
+          state.activeTaskIndices = [];
+          for (const task of ready) {
+            task.status = "in_progress";
+            task.startedAt = new Date().toISOString();
+            state.activeTaskIndices.push(task.index);
+          }
+          state.currentTaskIndex = ready[0].index;
           writeReplState(worktree, state);
         }
       }
@@ -1135,23 +1140,34 @@ status: draft${issueRefLine}
     {
       result: z.enum(["pass", "fail", "skip"]).describe("Task result"),
       detail: z.string().describe("Result details: test output, error message, or skip reason"),
+      taskIndex: z.number().optional().describe("Zero-based task index (required for parallel batches, defaults to current task)"),
     },
-    async ({ result, detail }) => {
+    bridgeTool("repl_report", async ({ result, detail, taskIndex }) => {
       const state = readReplState(worktree);
       if (!state) return ok("✗ No REPL loop active. Run repl_init first.");
 
-      const current = getCurrentTask(state);
-      if (!current) {
-        if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
-          const task = state.tasks[state.currentTaskIndex];
-          if (task.status === "pending") task.status = "in_progress";
-          return ok(processReplReport(state, task, result, detail));
+      // Find the target task
+      let task: ReplTask | undefined;
+      if (taskIndex !== undefined) {
+        task = state.tasks[taskIndex];
+        if (!task) return ok(`✗ Invalid task index: ${taskIndex}`);
+        if (task.status !== "in_progress") return ok(`✗ Task #${taskIndex + 1} is not in progress (status: ${task.status})`);
+      } else {
+        const current = getCurrentTask(state) ?? undefined;
+        if (!current) {
+          if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
+            task = state.tasks[state.currentTaskIndex];
+            if (task.status === "pending") task.status = "in_progress";
+          }
+        } else {
+          task = current;
         }
-        return ok("✗ No task is currently in progress. Run repl_status to advance.");
       }
 
-      return ok(processReplReport(state, current, result, detail));
-    },
+      if (!task) return ok("✗ No task is currently in progress. Run repl_status to advance.");
+
+      return ok(processReplReport(state, task, result, detail));
+    }),
   );
 
   mcpServer.tool(
@@ -1170,7 +1186,14 @@ status: draft${issueRefLine}
       const current = getCurrentTask(state);
 
       let output = `✓ Interrupted REPL loop detected\n\nPlan: ${state.planFilename}\nProgress: ${done}/${total} tasks`;
-      if (current) {
+      const activeCount = state.tasks.filter(t => t.status === "in_progress").length;
+      if (activeCount > 1) {
+        const activeTasks = state.tasks.filter(t => t.status === "in_progress");
+        output += `\n\nInterrupted parallel batch (${activeCount} tasks):`;
+        for (const t of activeTasks) {
+          output += `\n  - Task #${t.index + 1}: "${t.description}"`;
+        }
+      } else if (current) {
         output += `\n\nInterrupted task (#${current.index + 1}): "${current.description}"`;
       }
       output += "\n\nRun repl_status to continue.";
@@ -1205,7 +1228,7 @@ status: draft${issueRefLine}
       devops: z.string().optional().describe("Raw report from devops sub-agent"),
       docsWriter: z.string().optional().describe("Raw report from docs-writer sub-agent"),
     },
-    async (args) => {
+    bridgeTool("quality_gate_summary", async (args) => {
       let resolvedScope = args.scope ?? "unknown";
       if (args.changedFiles && args.changedFiles.length > 0) {
         const classification = classifyChangeScope(args.changedFiles);
@@ -1263,7 +1286,7 @@ status: draft${issueRefLine}
       }, null, 2));
 
       return ok(lines.join("\n"));
-    },
+    }),
   );
 
   mcpServer.tool(
@@ -1386,11 +1409,12 @@ status: draft${issueRefLine}
     {
       commitMessage: z.string().describe("Commit message"),
     },
-    async ({ commitMessage }) => {
+    bridgeTool("task_finalize", async ({ commitMessage }) => {
       try {
         await exec("git", ["add", "-A"], { cwd: worktree, nothrow: true });
         const result = await exec("git", ["commit", "-m", commitMessage], { cwd: worktree, nothrow: true });
         if (result.exitCode === 0) {
+          bridge.taskFinished();
           return ok(`✓ Committed: ${commitMessage.substring(0, 50)}...`);
         } else {
           return ok(`✗ Commit failed: ${result.stderr}`);
@@ -1398,7 +1422,7 @@ status: draft${issueRefLine}
       } catch (error) {
         return err(error);
       }
-    },
+    }),
   );
 
   // ─── Coordination tools (Phase 2) ──────────────────────────────────────────
@@ -1590,13 +1614,17 @@ status: draft${issueRefLine}
         index: i,
         description: parsed.description,
         acceptanceCriteria: parsed.acceptanceCriteria,
+        dependsOn: parsed.dependsOn,
         status: "pending" as const,
         retries: 0,
         iterations: [],
       }));
 
+      let exBatches: TaskBatch[] | undefined;
+      try { exBatches = computeBatches(tasks); } catch (e: any) { return ok(`✗ Error: ${e.message}`); }
+
       const state: ReplState = {
-        version: 1,
+        version: 2,
         planFilename,
         startedAt: new Date().toISOString(),
         buildCommand: buildCommand ?? detected.buildCommand,
@@ -1604,7 +1632,9 @@ status: draft${issueRefLine}
         lintCommand: detected.lintCommand,
         maxRetries,
         currentTaskIndex: -1,
+        activeTaskIndices: [],
         tasks,
+        batches: exBatches,
       };
 
       writeReplState(worktree, state);
@@ -1622,11 +1652,15 @@ status: draft${issueRefLine}
 
       const current = getCurrentTask(state);
       if (!current && !isLoopComplete(state)) {
-        const next = getNextTask(state);
-        if (next) {
-          next.status = "in_progress";
-          next.startedAt = new Date().toISOString();
-          state.currentTaskIndex = next.index;
+        const ready = getReadyTasks(state);
+        if (ready.length > 0) {
+          state.activeTaskIndices = [];
+          for (const task of ready) {
+            task.status = "in_progress";
+            task.startedAt = new Date().toISOString();
+            state.activeTaskIndices.push(task.index);
+          }
+          state.currentTaskIndex = ready[0].index;
           writeReplState(worktree, state);
         }
       }
@@ -1641,22 +1675,31 @@ status: draft${issueRefLine}
     {
       result: z.enum(["pass", "fail", "skip"]).describe("Task result"),
       detail: z.string().describe("Result details"),
+      taskIndex: z.number().optional().describe("Zero-based task index for parallel batches"),
     },
-    async ({ result, detail }) => {
+    async ({ result, detail, taskIndex }) => {
       const state = readReplState(worktree);
       if (!state) return ok("✗ No execution loop active.");
 
-      const current = getCurrentTask(state);
-      if (!current) {
-        if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
-          const task = state.tasks[state.currentTaskIndex];
-          if (task.status === "pending") task.status = "in_progress";
-          return ok(processReplReport(state, task, result, detail));
+      let task: ReplTask | undefined;
+      if (taskIndex !== undefined) {
+        task = state.tasks[taskIndex];
+        if (!task) return ok(`✗ Invalid task index: ${taskIndex}`);
+        if (task.status !== "in_progress") return ok(`✗ Task #${taskIndex + 1} is not in progress (status: ${task.status})`);
+      } else {
+        const current = getCurrentTask(state) ?? undefined;
+        if (!current) {
+          if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
+            task = state.tasks[state.currentTaskIndex];
+            if (task.status === "pending") task.status = "in_progress";
+          }
+        } else {
+          task = current;
         }
-        return ok("✗ No task is currently in progress.");
       }
 
-      return ok(processReplReport(state, current, result, detail));
+      if (!task) return ok("✗ No task is currently in progress.");
+      return ok(processReplReport(state, task, result, detail));
     },
   );
 
@@ -1673,7 +1716,16 @@ status: draft${issueRefLine}
       const current = getCurrentTask(state);
 
       let output = `✓ Interrupted execution loop detected\n\nPlan: ${state.planFilename}\nProgress: ${done}/${total}`;
-      if (current) output += `\n\nInterrupted: #${current.index + 1} "${current.description}"`;
+      const exActiveCount = state.tasks.filter(t => t.status === "in_progress").length;
+      if (exActiveCount > 1) {
+        const activeTasks = state.tasks.filter(t => t.status === "in_progress");
+        output += `\n\nInterrupted parallel batch (${exActiveCount} tasks):`;
+        for (const t of activeTasks) {
+          output += `\n  - Task #${t.index + 1}: "${t.description}"`;
+        }
+      } else if (current) {
+        output += `\n\nInterrupted: #${current.index + 1} "${current.description}"`;
+      }
       output += "\n\nRun execute_task to continue.";
       return ok(output);
     },
@@ -1767,6 +1819,7 @@ status: draft${issueRefLine}
           task.status = "failed";
           task.completedAt = new Date().toISOString();
           output = `✗ Task #${taskNum} FAILED — retries exhausted\n  "${task.description}"`;
+          bridge.interactionNeeded("retries_exhausted", `Task #${taskNum} failed after ${state.maxRetries} attempts`);
         } else {
           const remaining = state.maxRetries - task.retries;
           output = `⚠ Task #${taskNum} FAILED (${remaining} retries remaining)\n  "${task.description}"`;
@@ -1783,16 +1836,42 @@ status: draft${issueRefLine}
       }
     }
 
-    const next = getNextTask(state);
-    if (next) {
-      next.status = "in_progress";
-      next.startedAt = new Date().toISOString();
-      state.currentTaskIndex = next.index;
-      output += `\n\n→ Next: Task #${next.index + 1} "${next.description}"`;
+    // Remove completed task from activeTaskIndices
+    if (state.activeTaskIndices) {
+      state.activeTaskIndices = state.activeTaskIndices.filter(idx => idx !== task.index);
+    }
+
+    // Check if current batch is complete (all active tasks done)
+    const hasActiveParallelTasks = state.activeTaskIndices && state.activeTaskIndices.length > 0;
+
+    if (hasActiveParallelTasks) {
+      // Other parallel tasks still running — don't advance yet
+      output += `\n\n→ ${state.activeTaskIndices!.length} parallel task(s) still in progress.`;
     } else {
-      state.currentTaskIndex = -1;
-      state.completedAt = new Date().toISOString();
-      output += "\n\n✓ All tasks complete.";
+      // All parallel tasks done — advance to next batch
+      const ready = getReadyTasks(state);
+      if (ready.length > 0) {
+        state.activeTaskIndices = [];
+        for (const nextTask of ready) {
+          nextTask.status = "in_progress";
+          nextTask.startedAt = new Date().toISOString();
+          state.activeTaskIndices.push(nextTask.index);
+        }
+        state.currentTaskIndex = ready[0].index;
+
+        if (ready.length === 1) {
+          output += `\n\n→ Next: Task #${ready[0].index + 1} "${ready[0].description}"`;
+        } else {
+          output += `\n\n→ Next batch (${ready.length} parallel tasks):`;
+          for (const t of ready) {
+            output += `\n  - Task #${t.index + 1}: "${t.description}"`;
+          }
+        }
+      } else if (isLoopComplete(state)) {
+        state.currentTaskIndex = -1;
+        state.completedAt = new Date().toISOString();
+        output += "\n\n✓ All tasks complete.";
+      }
     }
 
     writeReplState(worktree, state);

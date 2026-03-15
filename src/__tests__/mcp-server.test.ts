@@ -58,6 +58,26 @@ vi.mock("../tools/coordinate.js", () => ({
   coordinateStatus: vi.fn().mockReturnValue("✓ Coordination Status"),
 }));
 
+// Mock plan tools (shared pure functions imported by mcp-server)
+vi.mock("../tools/plan.js", () => ({
+  executePlanStart: vi.fn().mockReturnValue("✓ Plan skeleton created: test.md"),
+  executePlanInterview: vi.fn().mockReturnValue("✓ Refinement added to test.md"),
+  executePlanApprove: vi.fn().mockReturnValue("✓ Plan approved: test.md"),
+  executePlanEdit: vi.fn().mockReturnValue("✓ Plan updated: test.md"),
+}));
+
+// Mock SpavnCodeBridge (fire-and-forget, no-op in tests)
+vi.mock("../utils/spavn-code-bridge.js", () => ({
+  SpavnCodeBridge: vi.fn(() => ({
+    taskStarted: vi.fn(),
+    taskFinished: vi.fn(),
+    toolCall: vi.fn(),
+    error: vi.fn(),
+    interactionNeeded: vi.fn(),
+    isActive: false,
+  })),
+}));
+
 // We'll import the tool registry after mocking
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 

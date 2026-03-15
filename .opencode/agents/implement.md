@@ -133,40 +133,81 @@ Implement plan tasks iteratively using the REPL loop. Each task goes through a *
 
 **ALL implementation tasks are delegated to workers with the `coder` skill.** The implement agent does NOT write code directly. For every task, prepare context and launch a worker via the Task tool (see Step 6c).
 
+**Task dependencies:** If the plan uses `(depends: N, M)` syntax on task lines, the REPL loop automatically groups independent tasks into parallel batches. Tasks without dependency markers are treated as sequential (one per batch) for backward compatibility.
+
+Example plan with dependencies:
+```
+- [ ] Task 1: Set up database schema
+- [ ] Task 2: Create API routes (depends: 1)
+- [ ] Task 3: Build frontend components
+- [ ] Task 4: Integration tests (depends: 2, 3)
+```
+This produces: Batch 0 = [Task 1, Task 3], Batch 1 = [Task 2], Batch 2 = [Task 4].
+
 #### 6a: Initialize the Loop
 Run `repl_init` with the plan filename from Step 3.
 Review the auto-detected build/test commands. If they look wrong, re-run with manual overrides.
 
 #### 6b: Check Loop Status
-Run `repl_status` to see the next pending task, current progress, build/test commands, and acceptance criteria (ACs) for the current task. Implement to satisfy all listed ACs.
+Run `repl_status` to see the current progress, build/test commands, and the next batch of ready tasks. The tool returns:
+- If a single task is ready: task description and acceptance criteria (same as before)
+- If multiple tasks are ready (parallel batch): all tasks in the batch with their ACs
 
-#### 6c: Delegate to Worker (coder skill)
-Prepare context from `repl_status` output and launch a worker via the Task tool:
-1. **Gather context** — Task title, description, acceptance criteria, relevant files, and build/test commands from the `repl_status` output
-2. **Include cross-task context** — List files created or modified by previous tasks so the worker can maintain consistency
-3. **Launch worker** — `Task(subagent_type="worker", prompt="Load skill: coder. [all gathered context]")`
-4. **Review the summary** — When the worker returns, review its implementation summary before proceeding to 6d (verification)
+Implement to satisfy all listed ACs for every task in the batch.
+
+#### 6c: Delegate to Worker(s) (coder skill)
+Prepare context from `repl_status` output and launch worker(s) via the Task tool:
+
+**Single task (batch size = 1):**
+1. Gather context — Task title, description, ACs, relevant files, build/test commands
+2. Include cross-task context — List files created or modified by previous tasks
+3. Launch worker — `Task(subagent_type="worker", prompt="Load skill: coder. [all gathered context]")`
+4. Review the summary when it returns, then proceed to 6d
+
+**Multiple tasks (parallel batch):**
+1. Gather context for EACH task in the batch — title, description, ACs, relevant files
+2. Include cross-task context for all tasks — files from prior batches
+3. **Launch ALL workers in a SINGLE message for parallel execution:**
+   ```
+   Task(subagent_type="worker", prompt="Load skill: coder. Task: [task 1 context]")
+   Task(subagent_type="worker", prompt="Load skill: coder. Task: [task 2 context]")
+   Task(subagent_type="worker", prompt="Load skill: coder. Task: [task 3 context]")
+   ```
+4. Wait for ALL workers to return, then review each summary before proceeding to 6d
 
 #### 6d: Verify — Build + Test
 Run the build command (from repl_status output) via bash.
 If build passes, run the test command via bash.
 You can scope tests to relevant files during the loop (e.g., `npx vitest run src/tools/repl.test.ts`).
 
+**For parallel batches:** Run build + test ONCE after ALL batch workers return — not after each individual worker.
+
 #### 6e: Report the Outcome
-Run `repl_report` with the result:
-- **pass** — build + tests green. Include a brief summary of test output.
-- **fail** — something broke. Include the error message or failing test output.
+Run `repl_report` for EACH task in the batch:
+- **pass** — build + tests green. Include a brief summary.
+- **fail** — something broke. Include the error message.
 - **skip** — task should be deferred. Include the reason.
+
+**For parallel batches**, report each task with its `taskIndex`:
+```
+repl_report(result="pass", detail="...", taskIndex=0)
+repl_report(result="pass", detail="...", taskIndex=2)
+repl_report(result="fail", detail="...", taskIndex=4)
+```
+
+The loop auto-advances to the next batch only when ALL tasks in the current batch are reported.
 
 #### 6f: Loop Decision
 Based on the repl_report response:
-- **"Next: Task #N"** → Go to 6b (pick up next task)
-- **"Fix the issue, N retries remaining"** → Re-launch worker (coder skill) with: the original task description, error output from the failed build/test, and a summary of the previous attempt. Then go to 6d (re-verify)
+- **"Next batch (N parallel tasks)"** → Go to 6b (pick up next batch)
+- **"Next: Task #N"** → Go to 6b (single-task batch)
+- **"N parallel task(s) still in progress"** → Wait for remaining workers, then report their results
+- **"Fix the issue, N retries remaining"** → Re-launch the failed worker with error context, then go to 6d
 - **"ASK THE USER"** → Use the question tool:
   "Task #N has failed after 3 attempts. How would you like to proceed?"
   Options:
   1. **Let me fix it manually** — Pause, user makes changes, then resume
-  2. **Skip this task** — Mark as skipped, continue with next task
+  2. **Skip this task** — Mark as skipped, continue with next batch
   3. **Abort the loop** — Stop implementation, proceed to quality gate with partial results
 - **"All tasks complete"** → Exit loop, proceed to Step 7
 
@@ -174,6 +215,7 @@ Based on the repl_report response:
 - **Max 3 retries per task** (configurable via repl_init)
 - **If build fails 3 times in a row on DIFFERENT tasks**, pause and ask user (likely a systemic issue)
 - **Always run build before tests** — don't waste time testing broken code
+- **For parallel batches:** If one task in a batch fails, the others in that batch still complete. Only the failed task is retried.
 
 ### Step 7: Quality Gate — Two-Phase Sub-Agent Review (MANDATORY)
 
@@ -391,7 +433,7 @@ Load **multiple skills** if the task spans domains (e.g., fullstack feature → 
 - `github_projects` - List GitHub Project board items
 - `repl_init` - Initialize REPL loop from a plan (parses tasks, detects build/test commands)
 - `repl_status` - Get loop progress, current task, and build/test commands
-- `repl_report` - Report task outcome (pass/fail/skip) and advance the loop
+- `repl_report` - Report task outcome (pass/fail/skip) with optional `taskIndex` for parallel batches
 - `repl_resume` - Detect and resume an interrupted REPL loop from a previous session
 - `repl_summary` - Generate markdown results table for PR body inclusion
 - `quality_gate_summary` - Aggregate sub-agent findings into unified report with go/no-go recommendation

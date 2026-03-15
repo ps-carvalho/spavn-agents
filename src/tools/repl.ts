@@ -23,8 +23,11 @@ import {
   detectIncompleteState,
   formatProgress,
   formatSummary,
+  computeBatches,
+  getReadyTasks,
   type ReplState,
   type ReplTask,
+  type TaskBatch,
 } from "../utils/repl.js";
 
 const SPAVN_DIR = ".spavn";
@@ -96,13 +99,22 @@ export const init = tool({
       index: i,
       description: parsed.description,
       acceptanceCriteria: parsed.acceptanceCriteria,
+      dependsOn: parsed.dependsOn,
       status: "pending" as const,
       retries: 0,
       iterations: [],
     }));
 
+    // Compute execution batches from task dependencies
+    let batches: TaskBatch[] | undefined;
+    try {
+      batches = computeBatches(tasks);
+    } catch (err: any) {
+      return `\u2717 Error: ${err.message}`;
+    }
+
     const state: ReplState = {
-      version: 1,
+      version: 2,
       planFilename,
       startedAt: new Date().toISOString(),
       buildCommand: finalBuild,
@@ -110,7 +122,9 @@ export const init = tool({
       lintCommand: detected.lintCommand,
       maxRetries,
       currentTaskIndex: -1,
+      activeTaskIndices: [],
       tasks,
+      batches,
     };
 
     // 5. Write state
@@ -121,10 +135,14 @@ export const init = tool({
       ? `Auto-detected (${detected.framework})`
       : "Not detected \u2014 provide overrides if needed";
 
+    const batchInfo = batches && batches.length > 0
+      ? `\nBatches: ${batches.length} (first batch: ${batches[0].taskIndices.length} parallel task${batches[0].taskIndices.length > 1 ? "s" : ""})`
+      : "";
+
     return `\u2713 REPL loop initialized
 
 Plan: ${planFilename}
-Tasks: ${tasks.length}
+Tasks: ${tasks.length}${batchInfo}
 Detection: ${cmdInfo}
 
 Build: ${finalBuild || "(none)"}
@@ -153,14 +171,19 @@ export const status = tool({
       return `\u2717 No REPL loop active.\n\nRun repl_init with a plan filename to start a loop.`;
     }
 
-    // Auto-advance: if no task is in_progress, promote the next pending task
+    // Auto-advance: if no tasks are in_progress, promote the next ready batch
     const current = getCurrentTask(state);
     if (!current && !isLoopComplete(state)) {
-      const next = getNextTask(state);
-      if (next) {
-        next.status = "in_progress";
-        next.startedAt = new Date().toISOString();
-        state.currentTaskIndex = next.index;
+      const ready = getReadyTasks(state);
+      if (ready.length > 0) {
+        state.activeTaskIndices = [];
+        for (const task of ready) {
+          task.status = "in_progress";
+          task.startedAt = new Date().toISOString();
+          state.activeTaskIndices.push(task.index);
+        }
+        // Set currentTaskIndex to first for backward compat
+        state.currentTaskIndex = ready[0].index;
         writeReplState(context.worktree, state);
       }
     }
@@ -186,30 +209,51 @@ export const report = tool({
     detail: tool.schema
       .string()
       .describe("Result details: test output summary, error message, or skip reason"),
+    taskIndex: tool.schema
+      .number()
+      .optional()
+      .describe("Zero-based task index (required for parallel batches, defaults to current task)"),
   },
   async execute(args, context) {
-    const { result, detail } = args;
+    const { result, detail, taskIndex } = args;
     const state = readReplState(context.worktree);
 
     if (!state) {
       return `\u2717 No REPL loop active. Run repl_init first.`;
     }
 
-    // Find the current in_progress task
-    const current = getCurrentTask(state);
-    if (!current) {
-      // Try to find the task at currentTaskIndex
-      if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
-        const task = state.tasks[state.currentTaskIndex];
-        if (task.status === "pending") {
-          task.status = "in_progress";
-        }
-        return processReport(state, task, result, detail, context.worktree);
+    // Find the target task
+    let task: ReplTask | undefined;
+    if (taskIndex !== undefined) {
+      // Explicit task index (for parallel batches)
+      task = state.tasks[taskIndex];
+      if (!task) {
+        return `\u2717 Invalid task index: ${taskIndex}`;
       }
+      if (task.status !== "in_progress") {
+        return `\u2717 Task #${taskIndex + 1} is not in progress (status: ${task.status})`;
+      }
+    } else {
+      // Legacy: find current in_progress task
+      const current = getCurrentTask(state) ?? undefined;
+      if (!current) {
+        // Try to find the task at currentTaskIndex
+        if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
+          task = state.tasks[state.currentTaskIndex];
+          if (task.status === "pending") {
+            task.status = "in_progress";
+          }
+        }
+      } else {
+        task = current;
+      }
+    }
+
+    if (!task) {
       return `\u2717 No task is currently in progress.\n\nRun repl_status to advance to the next task.`;
     }
 
-    return processReport(state, current, result, detail, context.worktree);
+    return processReport(state, task, result, detail, context.worktree);
   },
 });
 
@@ -273,18 +317,42 @@ function processReport(
     }
   }
 
-  // Advance to next task
-  const next = getNextTask(state);
-  if (next) {
-    next.status = "in_progress";
-    next.startedAt = new Date().toISOString();
-    state.currentTaskIndex = next.index;
-    output += `\n\n\u2192 Next: Task #${next.index + 1} "${next.description}"`;
+  // Remove completed task from activeTaskIndices
+  if (state.activeTaskIndices) {
+    state.activeTaskIndices = state.activeTaskIndices.filter(idx => idx !== task.index);
+  }
+
+  // Check if current batch is complete (all active tasks done)
+  const hasActiveParallelTasks = state.activeTaskIndices && state.activeTaskIndices.length > 0;
+
+  if (hasActiveParallelTasks) {
+    // Other parallel tasks still running — don't advance yet
+    output += `\n\n\u2192 ${state.activeTaskIndices!.length} parallel task(s) still in progress.`;
   } else {
-    // All tasks done
-    state.currentTaskIndex = -1;
-    state.completedAt = new Date().toISOString();
-    output += "\n\n\u2713 All tasks complete. Run repl_summary to generate the results report, then proceed to the quality gate (Step 7).";
+    // All parallel tasks done — advance to next batch
+    const ready = getReadyTasks(state);
+    if (ready.length > 0) {
+      state.activeTaskIndices = [];
+      for (const nextTask of ready) {
+        nextTask.status = "in_progress";
+        nextTask.startedAt = new Date().toISOString();
+        state.activeTaskIndices.push(nextTask.index);
+      }
+      state.currentTaskIndex = ready[0].index;
+
+      if (ready.length === 1) {
+        output += `\n\n\u2192 Next: Task #${ready[0].index + 1} "${ready[0].description}"`;
+      } else {
+        output += `\n\n\u2192 Next batch (${ready.length} parallel tasks):`;
+        for (const t of ready) {
+          output += `\n  - Task #${t.index + 1}: "${t.description}"`;
+        }
+      }
+    } else if (isLoopComplete(state)) {
+      state.currentTaskIndex = -1;
+      state.completedAt = new Date().toISOString();
+      output += "\n\n\u2713 All tasks complete. Run repl_summary to generate the results report, then proceed to the quality gate (Step 7).";
+    }
   }
 
   writeReplState(cwd, state);
@@ -320,7 +388,15 @@ export const resume = tool({
     lines.push(`Progress: ${done}/${total} tasks completed (${passed} passed, ${failed} failed, ${skipped} skipped)`);
     lines.push(`Started: ${state.startedAt}`);
 
-    if (current) {
+    const activeCount = state.tasks.filter(t => t.status === "in_progress").length;
+    if (activeCount > 1) {
+      const activeTasks = state.tasks.filter(t => t.status === "in_progress");
+      lines.push("");
+      lines.push(`Interrupted parallel batch (${activeCount} tasks):`);
+      for (const t of activeTasks) {
+        lines.push(`  - Task #${t.index + 1}: "${t.description}" (${t.retries} retries)`);
+      }
+    } else if (current) {
       lines.push("");
       lines.push(`Interrupted task (#${current.index + 1}):`);
       lines.push(`  "${current.description}"`);

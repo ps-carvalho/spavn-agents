@@ -57,6 +57,8 @@ vi.mock("../../utils/repl.js", () => ({
   detectIncompleteState: vi.fn(),
   formatProgress: vi.fn(),
   formatSummary: vi.fn(),
+  computeBatches: vi.fn().mockReturnValue([]),
+  getReadyTasks: vi.fn().mockReturnValue([]),
 }));
 
 // Import after mocks
@@ -74,6 +76,8 @@ const {
   detectIncompleteState,
   formatProgress,
   formatSummary,
+  computeBatches,
+  getReadyTasks,
 } = await import("../../utils/repl.js");
 const replTools = await import("../repl.js");
 
@@ -87,6 +91,8 @@ const mockGetCurrentTask = vi.mocked(getCurrentTask);
 const mockIsLoopComplete = vi.mocked(isLoopComplete);
 const mockFormatProgress = vi.mocked(formatProgress);
 const mockFormatSummary = vi.mocked(formatSummary);
+const mockComputeBatches = vi.mocked(computeBatches);
+const mockGetReadyTasks = vi.mocked(getReadyTasks);
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 
@@ -98,6 +104,7 @@ function makeTask(overrides: Partial<ReplTask> = {}): ReplTask {
   return {
     index: 0,
     description: "Implement feature X",
+    acceptanceCriteria: [],
     status: "pending",
     retries: 0,
     iterations: [],
@@ -107,6 +114,7 @@ function makeTask(overrides: Partial<ReplTask> = {}): ReplTask {
 
 function makeState(overrides: Partial<ReplState> = {}): ReplState {
   return {
+    version: 2,
     planFilename: "2024-01-01-feature-test.md",
     startedAt: "2024-01-01T00:00:00.000Z",
     buildCommand: "npm run build",
@@ -233,11 +241,12 @@ describe("repl tools argument schemas", () => {
     expect(Object.keys(replTools.status.args)).toHaveLength(0);
   });
 
-  it("report tool should accept result and detail", () => {
+  it("report tool should accept result, detail, and taskIndex", () => {
     const argKeys = Object.keys(replTools.report.args);
     expect(argKeys).toContain("result");
     expect(argKeys).toContain("detail");
-    expect(argKeys).toHaveLength(2);
+    expect(argKeys).toContain("taskIndex");
+    expect(argKeys).toHaveLength(3);
   });
 
   it("summary tool should have empty args", () => {
@@ -282,8 +291,8 @@ describe("repl_init execution", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A\n- [ ] Task B");
     mockParseTasksWithAC.mockReturnValue([
-      { description: "Task A", acceptanceCriteria: [] },
-      { description: "Task B", acceptanceCriteria: [] },
+      { description: "Task A", acceptanceCriteria: [], dependsOn: [] },
+      { description: "Task B", acceptanceCriteria: [], dependsOn: [] },
     ]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
@@ -304,7 +313,7 @@ describe("repl_init execution", () => {
   it("uses override commands when provided", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
     const result = await replTools.init.execute(
@@ -324,7 +333,7 @@ describe("repl_init execution", () => {
   it("uses custom maxRetries when provided", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
     const result = await replTools.init.execute(
@@ -342,7 +351,7 @@ describe("repl_init execution", () => {
   it("shows 'Not detected' when no commands found", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(
       makeDetection({ detected: false, framework: "unknown", buildCommand: null, testCommand: null }),
     );
@@ -360,8 +369,8 @@ describe("repl_init execution", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A\n- [ ] Task B");
     mockParseTasksWithAC.mockReturnValue([
-      { description: "Task A", acceptanceCriteria: [] },
-      { description: "Task B", acceptanceCriteria: [] },
+      { description: "Task A", acceptanceCriteria: [], dependsOn: [] },
+      { description: "Task B", acceptanceCriteria: [], dependsOn: [] },
     ]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
@@ -401,7 +410,7 @@ describe("repl_init execution", () => {
   it("shows lint command when detected", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(
       makeDetection({ lintCommand: "npm run lint" }),
     );
@@ -445,12 +454,12 @@ describe("repl_status execution", () => {
   });
 
   it("auto-advances to next pending task when none in progress", async () => {
-    const state = makeState();
     const nextTask = makeTask({ index: 0, description: "Task A", status: "pending" });
+    const state = makeState({ tasks: [nextTask] });
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(null);
     mockIsLoopComplete.mockReturnValue(false);
-    mockGetNextTask.mockReturnValue(nextTask);
+    mockGetReadyTasks.mockReturnValue([nextTask]);
     mockFormatProgress.mockReturnValue("Progress: ░░░░ 0/3 tasks (0%)");
 
     await replTools.status.execute({}, mockContext);
@@ -458,6 +467,7 @@ describe("repl_status execution", () => {
     // Should have promoted the next task to in_progress
     expect(nextTask.status).toBe("in_progress");
     expect(state.currentTaskIndex).toBe(0);
+    expect(state.activeTaskIndices).toEqual([0]);
     expect(mockWriteReplState).toHaveBeenCalledWith("/tmp/test-repl", state);
   });
 
@@ -511,12 +521,14 @@ describe("repl_report execution", () => {
     const nextTask = makeTask({ index: 1, description: "Task B", status: "pending" });
     const state = makeState({
       currentTaskIndex: 0,
+      activeTaskIndices: [0],
       tasks: [currentTask, nextTask, makeTask({ index: 2, description: "Task C" })],
     });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(nextTask);
+    mockGetReadyTasks.mockReturnValue([nextTask]);
+    mockIsLoopComplete.mockReturnValue(false);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Build and tests passed" },
@@ -533,11 +545,12 @@ describe("repl_report execution", () => {
 
   it("records iteration on pass", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress" });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     await replTools.report.execute(
       { result: "pass", detail: "All green" },
@@ -572,11 +585,12 @@ describe("repl_report execution", () => {
 
   it("escalates to user when retries exhausted", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress", retries: 2 });
-    const state = makeState({ currentTaskIndex: 0, maxRetries: 3, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], maxRetries: 3, tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "fail", detail: "Still broken" },
@@ -594,12 +608,14 @@ describe("repl_report execution", () => {
     const nextTask = makeTask({ index: 1, description: "Task B", status: "pending" });
     const state = makeState({
       currentTaskIndex: 0,
+      activeTaskIndices: [0],
       tasks: [currentTask, nextTask],
     });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(nextTask);
+    mockGetReadyTasks.mockReturnValue([nextTask]);
+    mockIsLoopComplete.mockReturnValue(false);
 
     const result = await replTools.report.execute(
       { result: "skip", detail: "Not applicable to this project" },
@@ -614,11 +630,12 @@ describe("repl_report execution", () => {
 
   it("reports all tasks complete when no next task", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress" });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Done" },
@@ -632,11 +649,12 @@ describe("repl_report execution", () => {
 
   it("truncates detail to 2000 characters", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress" });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const longDetail = "x".repeat(3000);
     await replTools.report.execute(
@@ -651,6 +669,7 @@ describe("repl_report execution", () => {
     const pendingTask = makeTask({ index: 1, description: "Task B", status: "pending" });
     const state = makeState({
       currentTaskIndex: 1,
+      activeTaskIndices: [],
       tasks: [
         makeTask({ index: 0, status: "passed" }),
         pendingTask,
@@ -659,7 +678,8 @@ describe("repl_report execution", () => {
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(null); // No in_progress task
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Done" },
@@ -678,11 +698,12 @@ describe("repl_report execution", () => {
         { at: "2024-01-01T00:00:00Z", result: "fail", detail: "first try" },
       ],
     });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Fixed it" },
@@ -736,11 +757,12 @@ describe("repl_report edge cases", () => {
         { at: "2024-01-01T00:01:00Z", result: "fail", detail: "try 2" },
       ],
     });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Finally worked" },
@@ -760,11 +782,12 @@ describe("repl_report edge cases", () => {
         { at: "t", result: "fail", detail: "" },
       ],
     });
-    const state = makeState({ currentTaskIndex: 0, maxRetries: 5, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], maxRetries: 5, tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Done" },
@@ -776,11 +799,12 @@ describe("repl_report edge cases", () => {
 
   it("immediately exhausts retries when maxRetries is 1", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress", retries: 0 });
-    const state = makeState({ currentTaskIndex: 0, maxRetries: 1, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], maxRetries: 1, tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "fail", detail: "Broken" },
@@ -825,11 +849,12 @@ describe("repl_report edge cases", () => {
 
   it("sets completedAt when all tasks done after pass", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress" });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     await replTools.report.execute(
       { result: "pass", detail: "Done" },
@@ -842,11 +867,12 @@ describe("repl_report edge cases", () => {
 
   it("sets completedAt when all tasks done after skip", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress" });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     await replTools.report.execute(
       { result: "skip", detail: "Not needed" },
@@ -859,11 +885,12 @@ describe("repl_report edge cases", () => {
 
   it("sets completedAt when all tasks done after final fail", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress", retries: 2 });
-    const state = makeState({ currentTaskIndex: 0, maxRetries: 3, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], maxRetries: 3, tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     await replTools.report.execute(
       { result: "fail", detail: "Exhausted" },
@@ -878,11 +905,14 @@ describe("repl_report edge cases", () => {
     const passedTask = makeTask({ index: 0, status: "passed" });
     const state = makeState({
       currentTaskIndex: 0,
+      activeTaskIndices: [],
       tasks: [passedTask],
     });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const result = await replTools.report.execute(
       { result: "pass", detail: "Already done" },
@@ -898,11 +928,12 @@ describe("repl_report edge cases", () => {
 
   it("truncates detail in output to 200 characters", async () => {
     const currentTask = makeTask({ index: 0, status: "in_progress" });
-    const state = makeState({ currentTaskIndex: 0, tasks: [currentTask] });
+    const state = makeState({ currentTaskIndex: 0, activeTaskIndices: [0], tasks: [currentTask] });
 
     mockReadReplState.mockReturnValue(state);
     mockGetCurrentTask.mockReturnValue(currentTask);
-    mockGetNextTask.mockReturnValue(null);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(true);
 
     const longDetail = "D".repeat(500);
     const result = await replTools.report.execute(
@@ -961,7 +992,7 @@ describe("repl_init edge cases", () => {
   it("initializes with a single task plan", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Only task");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Only task", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Only task", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
     const result = await replTools.init.execute(
@@ -978,7 +1009,7 @@ describe("repl_init edge cases", () => {
   it("uses default maxRetries of 3 when not provided", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
     await replTools.init.execute(
@@ -993,7 +1024,7 @@ describe("repl_init edge cases", () => {
   it("sets startedAt to current ISO timestamp", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
     await replTools.init.execute(
@@ -1010,7 +1041,7 @@ describe("repl_init edge cases", () => {
   it("does not set completedAt on initialization", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
     await replTools.init.execute(
@@ -1026,9 +1057,9 @@ describe("repl_init edge cases", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] A\n- [ ] B\n- [ ] C");
     mockParseTasksWithAC.mockReturnValue([
-      { description: "A", acceptanceCriteria: [] },
-      { description: "B", acceptanceCriteria: [] },
-      { description: "C", acceptanceCriteria: [] },
+      { description: "A", acceptanceCriteria: [], dependsOn: [] },
+      { description: "B", acceptanceCriteria: [], dependsOn: [] },
+      { description: "C", acceptanceCriteria: [], dependsOn: [] },
     ]);
     mockDetectCommands.mockResolvedValue(makeDetection());
 
@@ -1048,7 +1079,7 @@ describe("repl_init edge cases", () => {
   it("preserves lint command from detection even with build/test overrides", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A");
-    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [] }]);
+    mockParseTasksWithAC.mockReturnValue([{ description: "Task A", acceptanceCriteria: [], dependsOn: [] }]);
     mockDetectCommands.mockResolvedValue(
       makeDetection({ lintCommand: "npm run lint" }),
     );
@@ -1099,5 +1130,242 @@ describe("repl_status edge cases", () => {
     await replTools.status.execute({}, mockContext);
 
     expect(mockGetNextTask).not.toHaveBeenCalled();
+  });
+
+  it("promotes all ready tasks in batch when auto-advancing", async () => {
+    const taskA = makeTask({ index: 0, description: "Task A", status: "pending" });
+    const taskB = makeTask({ index: 1, description: "Task B", status: "pending" });
+    const state = makeState({
+      tasks: [taskA, taskB],
+    });
+    mockReadReplState.mockReturnValue(state);
+    mockGetCurrentTask.mockReturnValue(null);
+    mockIsLoopComplete.mockReturnValue(false);
+    mockGetReadyTasks.mockReturnValue([taskA, taskB]);
+    mockFormatProgress.mockReturnValue("Progress info");
+
+    await replTools.status.execute({}, mockContext);
+
+    // Both tasks should be promoted to in_progress
+    expect(taskA.status).toBe("in_progress");
+    expect(taskB.status).toBe("in_progress");
+    expect(state.activeTaskIndices).toEqual([0, 1]);
+    expect(state.currentTaskIndex).toBe(0);
+    expect(mockWriteReplState).toHaveBeenCalledWith("/tmp/test-repl", state);
+  });
+});
+
+// ─── repl_report with taskIndex ──────────────────────────────────────────────
+
+describe("repl_report with explicit taskIndex", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports on specific task by index", async () => {
+    const taskA = makeTask({ index: 0, description: "Task A", status: "in_progress" });
+    const taskB = makeTask({ index: 1, description: "Task B", status: "in_progress" });
+    const state = makeState({
+      currentTaskIndex: 0,
+      activeTaskIndices: [0, 1],
+      tasks: [taskA, taskB],
+    });
+
+    mockReadReplState.mockReturnValue(state);
+    mockGetCurrentTask.mockReturnValue(taskA);
+    mockGetReadyTasks.mockReturnValue([]);
+    mockIsLoopComplete.mockReturnValue(false);
+
+    const result = await replTools.report.execute(
+      { result: "pass", detail: "Done", taskIndex: 1 },
+      mockContext,
+    );
+
+    expect(result).toContain("Task #2 PASSED");
+    expect(taskB.status).toBe("passed");
+  });
+
+  it("returns error for invalid task index", async () => {
+    const state = makeState({
+      tasks: [makeTask({ index: 0, status: "in_progress" })],
+    });
+
+    mockReadReplState.mockReturnValue(state);
+
+    const result = await replTools.report.execute(
+      { result: "pass", detail: "Done", taskIndex: 99 },
+      mockContext,
+    );
+
+    expect(result).toContain("✗ Invalid task index: 99");
+  });
+
+  it("returns error when task at index is not in_progress", async () => {
+    const state = makeState({
+      tasks: [
+        makeTask({ index: 0, status: "pending" }),
+        makeTask({ index: 1, status: "passed" }),
+      ],
+    });
+
+    mockReadReplState.mockReturnValue(state);
+
+    const result = await replTools.report.execute(
+      { result: "pass", detail: "Done", taskIndex: 1 },
+      mockContext,
+    );
+
+    expect(result).toContain("✗ Task #2 is not in progress (status: passed)");
+  });
+
+  it("shows parallel tasks still in progress after completing one", async () => {
+    const taskA = makeTask({ index: 0, description: "Task A", status: "in_progress" });
+    const taskB = makeTask({ index: 1, description: "Task B", status: "in_progress" });
+    const state = makeState({
+      currentTaskIndex: 0,
+      activeTaskIndices: [0, 1],
+      tasks: [taskA, taskB],
+    });
+
+    mockReadReplState.mockReturnValue(state);
+    mockGetCurrentTask.mockReturnValue(taskA);
+
+    const result = await replTools.report.execute(
+      { result: "pass", detail: "Done", taskIndex: 0 },
+      mockContext,
+    );
+
+    expect(result).toContain("1 parallel task(s) still in progress");
+    expect(state.activeTaskIndices).toEqual([1]);
+  });
+
+  it("advances to next batch when all parallel tasks complete", async () => {
+    const taskA = makeTask({ index: 0, description: "Task A", status: "in_progress" });
+    const taskB = makeTask({ index: 1, description: "Task B", status: "pending", dependsOn: [0] });
+    const state = makeState({
+      currentTaskIndex: 0,
+      activeTaskIndices: [0],
+      tasks: [taskA, taskB],
+    });
+
+    mockReadReplState.mockReturnValue(state);
+    mockGetCurrentTask.mockReturnValue(taskA);
+    mockGetReadyTasks.mockReturnValue([taskB]);
+    mockIsLoopComplete.mockReturnValue(false);
+
+    const result = await replTools.report.execute(
+      { result: "pass", detail: "Done", taskIndex: 0 },
+      mockContext,
+    );
+
+    expect(result).toContain("Next: Task #2");
+    expect(taskB.status).toBe("in_progress");
+    expect(state.activeTaskIndices).toEqual([1]);
+  });
+
+  it("shows next batch info when multiple tasks become ready", async () => {
+    const taskA = makeTask({ index: 0, description: "Task A", status: "in_progress" });
+    const taskB = makeTask({ index: 1, description: "Task B", status: "pending" });
+    const taskC = makeTask({ index: 2, description: "Task C", status: "pending" });
+    const state = makeState({
+      currentTaskIndex: 0,
+      activeTaskIndices: [0],
+      tasks: [taskA, taskB, taskC],
+    });
+
+    mockReadReplState.mockReturnValue(state);
+    mockGetCurrentTask.mockReturnValue(taskA);
+    mockGetReadyTasks.mockReturnValue([taskB, taskC]);
+    mockIsLoopComplete.mockReturnValue(false);
+
+    const result = await replTools.report.execute(
+      { result: "pass", detail: "Done", taskIndex: 0 },
+      mockContext,
+    );
+
+    expect(result).toContain("Next batch (2 parallel tasks):");
+    expect(result).toContain('Task #2: "Task B"');
+    expect(result).toContain('Task #3: "Task C"');
+  });
+});
+
+// ─── repl_init with dependencies ─────────────────────────────────────────────
+
+describe("repl_init with dependencies", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("populates dependsOn from parsed tasks and computes batches", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A\n- [ ] Task B (depends: 1)");
+    mockParseTasksWithAC.mockReturnValue([
+      { description: "Task A", acceptanceCriteria: [], dependsOn: [] },
+      { description: "Task B", acceptanceCriteria: [], dependsOn: [0] },
+    ]);
+    mockDetectCommands.mockResolvedValue(makeDetection());
+    mockComputeBatches.mockReturnValue([
+      { id: 0, taskIndices: [0], status: "pending" as const },
+      { id: 1, taskIndices: [1], status: "pending" as const },
+    ]);
+
+    const result = await replTools.init.execute(
+      { planFilename: "dep-plan.md" },
+      mockContext,
+    );
+
+    expect(result).toContain("✓ REPL loop initialized");
+    expect(result).toContain("Batches: 2");
+    expect(result).toContain("first batch: 1 parallel task)");
+
+    const writtenState = mockWriteReplState.mock.calls[0][1];
+    expect(writtenState.version).toBe(2);
+    expect(writtenState.tasks[0].dependsOn).toEqual([]);
+    expect(writtenState.tasks[1].dependsOn).toEqual([0]);
+    expect(writtenState.batches).toHaveLength(2);
+    expect(writtenState.activeTaskIndices).toEqual([]);
+  });
+
+  it("returns error when circular dependency detected", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("## Tasks\n- [ ] Task A (depends: 2)\n- [ ] Task B (depends: 1)");
+    mockParseTasksWithAC.mockReturnValue([
+      { description: "Task A", acceptanceCriteria: [], dependsOn: [1] },
+      { description: "Task B", acceptanceCriteria: [], dependsOn: [0] },
+    ]);
+    mockDetectCommands.mockResolvedValue(makeDetection());
+    mockComputeBatches.mockImplementation(() => {
+      throw new Error("Circular dependency detected among tasks: #1, #2");
+    });
+
+    const result = await replTools.init.execute(
+      { planFilename: "circular-plan.md" },
+      mockContext,
+    );
+
+    expect(result).toContain("✗ Error: Circular dependency");
+    expect(mockWriteReplState).not.toHaveBeenCalled();
+  });
+
+  it("shows plural 'tasks' in batch info when first batch has multiple tasks", async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("## Tasks\n- [ ] A\n- [ ] B\n- [ ] C (depends: 1, 2)");
+    mockParseTasksWithAC.mockReturnValue([
+      { description: "A", acceptanceCriteria: [], dependsOn: [] },
+      { description: "B", acceptanceCriteria: [], dependsOn: [] },
+      { description: "C", acceptanceCriteria: [], dependsOn: [0, 1] },
+    ]);
+    mockDetectCommands.mockResolvedValue(makeDetection());
+    mockComputeBatches.mockReturnValue([
+      { id: 0, taskIndices: [0, 1], status: "pending" as const },
+      { id: 1, taskIndices: [2], status: "pending" as const },
+    ]);
+
+    const result = await replTools.init.execute(
+      { planFilename: "parallel-plan.md" },
+      mockContext,
+    );
+
+    expect(result).toContain("Batches: 2 (first batch: 2 parallel tasks)");
   });
 });

@@ -408,5 +408,214 @@ The .spavn/ artifacts are committed. Branch creation happens during handoff.`;
   });
 }
 
+// ─── Shared pure functions (used by both OpenCode tools and MCP server) ──────
+
+/**
+ * Create a plan skeleton with title, type, and optional GitHub issue ref.
+ * Auto-inits .spavn/ if needed.
+ */
+export function executePlanStart(
+  worktree: string,
+  args: { title: string; type: string; issueRef?: number },
+): string {
+  const plansPath = ensureSpavnDir(worktree);
+
+  const date = new Date().toISOString().split("T")[0];
+  const slug = slugify(args.title);
+  const filename = `${date}-${args.type}-${slug}.md`;
+  const filepath = path.join(plansPath, filename);
+
+  const issueRefLine = args.issueRef ? `\nissue: ${args.issueRef}` : "";
+
+  const content = `---
+title: "${args.title}"
+type: ${args.type}
+created: ${new Date().toISOString()}
+status: draft${issueRefLine}
+---
+
+# ${args.title}
+
+## Context
+
+<!-- Describe the problem or opportunity -->
+
+## Approach
+
+<!-- Outline the technical approach -->
+
+## Tasks
+
+- [ ] <!-- Task 1 -->
+- [ ] <!-- Task 2 -->
+- [ ] <!-- Task 3 -->
+
+## Risks
+
+<!-- Identify potential risks -->
+`;
+
+  fs.writeFileSync(filepath, content);
+  return `✓ Plan skeleton created: ${filename}\n\nEdit the plan, then use plan_interview to refine and plan_approve when ready.`;
+}
+
+/**
+ * Append Q&A refinement to a draft plan.
+ */
+export function executePlanInterview(
+  worktree: string,
+  args: { planFilename: string; question: string; answer: string },
+): string {
+  const filepath = path.join(worktree, SPAVN_DIR, PLANS_DIR, args.planFilename);
+
+  if (!fs.existsSync(filepath)) {
+    return `✗ Plan not found: ${args.planFilename}`;
+  }
+
+  const content = fs.readFileSync(filepath, "utf-8");
+
+  // Check it's still draft
+  if (!content.includes("status: draft")) {
+    return `✗ Plan is not in draft status. Only draft plans can be refined.`;
+  }
+
+  const qaSection = `\n\n### Q: ${args.question}\n\n${args.answer}\n`;
+  fs.writeFileSync(filepath, content + qaSection);
+
+  return `✓ Refinement added to ${args.planFilename}`;
+}
+
+/**
+ * Update plan status from draft to approved.
+ */
+export function executePlanApprove(
+  worktree: string,
+  args: { planFilename: string },
+): string {
+  const filepath = path.join(worktree, SPAVN_DIR, PLANS_DIR, args.planFilename);
+
+  if (!fs.existsSync(filepath)) {
+    return `✗ Plan not found: ${args.planFilename}`;
+  }
+
+  let content = fs.readFileSync(filepath, "utf-8");
+
+  if (!content.includes("status: draft")) {
+    return `✗ Plan is not in draft status.`;
+  }
+
+  content = content.replace("status: draft", "status: approved");
+  fs.writeFileSync(filepath, content);
+
+  return `✓ Plan approved: ${args.planFilename}\n\nReady for coordinate_tasks to break into assignments.`;
+}
+
+/**
+ * Edit a plan file: overwrite content while preserving/updating frontmatter `updated` timestamp.
+ */
+export function executePlanEdit(
+  worktree: string,
+  args: { filename: string; content: string },
+): string {
+  const plansPath = path.join(worktree, SPAVN_DIR, PLANS_DIR);
+  const filepath = path.resolve(plansPath, args.filename);
+  const resolvedPlansDir = path.resolve(plansPath);
+
+  // Prevent path traversal
+  if (!filepath.startsWith(resolvedPlansDir + path.sep)) {
+    return `✗ Invalid plan filename: path traversal not allowed`;
+  }
+
+  if (!fs.existsSync(filepath)) {
+    return `✗ Plan not found: ${args.filename}`;
+  }
+
+  // Read existing file to check for frontmatter
+  const existing = fs.readFileSync(filepath, "utf-8");
+  const hasFrontmatter = /^---\n[\s\S]*?\n---/.test(existing);
+
+  let newContent = args.content;
+  if (hasFrontmatter) {
+    // Check if the new content also has frontmatter
+    const newHasFrontmatter = /^---\n[\s\S]*?\n---/.test(newContent);
+    if (newHasFrontmatter) {
+      // Upsert the updated timestamp in the new content's frontmatter
+      newContent = upsertFrontmatterField(newContent, "updated", new Date().toISOString());
+    } else {
+      // Extract existing frontmatter and prepend it to the new content
+      const fmMatch = existing.match(/^(---\n[\s\S]*?\n---)\n?/);
+      if (fmMatch) {
+        let frontmatter = fmMatch[1];
+        // Upsert updated timestamp
+        const withUpdated = upsertFrontmatterField(
+          frontmatter + "\n\ncontent",
+          "updated",
+          new Date().toISOString(),
+        );
+        // Extract just the frontmatter part back
+        const updatedFmMatch = withUpdated.match(/^(---\n[\s\S]*?\n---)/);
+        if (updatedFmMatch) {
+          frontmatter = updatedFmMatch[1];
+        }
+        newContent = frontmatter + "\n\n" + newContent;
+      }
+    }
+  }
+
+  fs.writeFileSync(filepath, newContent);
+  return `✓ Plan updated: ${args.filename}`;
+}
+
+// ─── OpenCode tool wrappers ──────────────────────────────────────────────────
+
+export const start = tool({
+  description:
+    "Create a plan skeleton with title, type, and optional GitHub issue ref. Auto-inits .spavn/ if needed.",
+  args: {
+    title: tool.schema.string().describe("Plan title"),
+    type: tool.schema
+      .enum(["feature", "bugfix", "refactor", "architecture", "spike", "docs"])
+      .describe("Plan type"),
+    issueRef: tool.schema.number().optional().describe("GitHub issue number to reference"),
+  },
+  async execute(args, context) {
+    return executePlanStart(context.worktree, args);
+  },
+});
+
+export const interview = tool({
+  description: "Append Q&A refinement to a draft plan",
+  args: {
+    planFilename: tool.schema.string().describe("Plan filename from .spavn/plans/"),
+    question: tool.schema.string().describe("Refinement question"),
+    answer: tool.schema.string().describe("Answer to the question"),
+  },
+  async execute(args, context) {
+    return executePlanInterview(context.worktree, args);
+  },
+});
+
+export const approve = tool({
+  description: "Update plan status from draft to approved",
+  args: {
+    planFilename: tool.schema.string().describe("Plan filename from .spavn/plans/"),
+  },
+  async execute(args, context) {
+    return executePlanApprove(context.worktree, args);
+  },
+});
+
+export const edit = tool({
+  description:
+    "Edit a plan file: overwrite content while preserving/updating frontmatter updated timestamp",
+  args: {
+    filename: tool.schema.string().describe("Plan filename from .spavn/plans/"),
+    content: tool.schema.string().describe("New plan content"),
+  },
+  async execute(args, context) {
+    return executePlanEdit(context.worktree, args);
+  },
+});
+
 // Export with underscore suffix to avoid reserved word
 export { delete_ as delete };

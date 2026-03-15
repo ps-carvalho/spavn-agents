@@ -71,6 +71,30 @@ const TOOL_NOTIFICATIONS: Record<string, ToolNotificationConfig> = {
     errorTitle: "Plan Delete Failed",
     errorMsg: (_, out) => out.substring(0, 100),
   },
+  plan_edit: {
+    successTitle: "Plan Updated",
+    successMsg: (args) => `Updated: ${args.filename ?? "plan"}`,
+    errorTitle: "Plan Edit Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  plan_start: {
+    successTitle: "Plan Created",
+    successMsg: (args) => args.title ?? "New plan skeleton",
+    errorTitle: "Plan Create Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  plan_interview: {
+    successTitle: "Plan Refined",
+    successMsg: (args) => `Q&A added to ${(args.planFilename ?? "plan").split("/").pop()?.substring(0, 40)}`,
+    errorTitle: "Plan Refine Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  plan_approve: {
+    successTitle: "Plan Approved",
+    successMsg: (args) => (args.planFilename ?? "plan").split("/").pop()?.substring(0, 40) ?? "Plan approved",
+    errorTitle: "Plan Approval Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
   // plan_commit — excluded: uses factory-based toasts in createCommit()
   session_save: {
     successTitle: "Session Saved",
@@ -210,6 +234,10 @@ export const SpavnPlugin: Plugin = async (ctx) => {
       plan_load: plan.load,
       plan_delete: plan.delete_,
       plan_commit: plan.createCommit(ctx.client),
+      plan_start: plan.start,
+      plan_interview: plan.interview,
+      plan_approve: plan.approve,
+      plan_edit: plan.edit,
 
       // Session tools - session summaries with decisions
       session_save: session.save,
