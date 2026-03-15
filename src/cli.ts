@@ -245,14 +245,6 @@ function removeAgentsAndSkills(targetDir: string): void {
   }
 }
 
-// ─── Flag parsing ────────────────────────────────────────────────────────────
-
-function parseScopeFlag(): "global" | "project" {
-  const args = process.argv.slice(3);
-  if (args.includes("--project")) return "project";
-  return "global";
-}
-
 // ─── Engine-backed sync command ─────────────────────────────────────────────
 
 function sync(): void {

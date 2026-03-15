@@ -1,8 +1,8 @@
 import { tool } from "@opencode-ai/plugin";
 import type { PluginInput } from "@opencode-ai/plugin";
 import { git } from "../utils/shell.js";
-
-const PROTECTED_BRANCHES = ["main", "master", "develop", "production", "staging"];
+import { PROTECTED_BRANCHES } from "../utils/constants.js";
+import * as branchHandlers from "./handlers/branch.js";
 
 // Extract client type from the plugin input via inference
 type Client = PluginInput["client"];
@@ -24,37 +24,30 @@ export function createCreate(client: Client) {
         .describe("Branch type - determines prefix"),
     },
     async execute(args, context) {
-      const { name, type } = args;
-      const branchName = `${type}/${name}`;
+      const result = await branchHandlers.executeCreate(context.worktree, {
+        name: args.name,
+        type: args.type,
+      });
 
-      // Check if we're in a git repository
-      try {
-        await git(context.worktree, "rev-parse", "--git-dir");
-      } catch {
-        return "✗ Error: Not in a git repository";
-      }
-
-      // Check if branch already exists
-      try {
-        const { stdout } = await git(context.worktree, "branch", "--list", branchName);
-        if (stdout.trim()) {
-          return `✗ Error: Branch '${branchName}' already exists.
-
-Use branch_switch to switch to it, or choose a different name.`;
-        }
-      } catch {
-        // Ignore error, branch check is optional
-      }
-
-      // Create and checkout the branch
-      try {
-        await git(context.worktree, "checkout", "-b", branchName);
-      } catch (error: any) {
+      if (result.ok) {
         try {
           await client.tui.showToast({
             body: {
-              title: `Branch: ${branchName}`,
-              message: `Failed to create: ${error.message || error}`,
+              title: `Branch: ${args.type}/${args.name}`,
+              message: `Created and checked out`,
+              variant: "success",
+              duration: 4000,
+            },
+          });
+        } catch {
+          // Toast failure is non-fatal
+        }
+      } else {
+        try {
+          await client.tui.showToast({
+            body: {
+              title: `Branch: ${args.type}/${args.name}`,
+              message: `Failed to create`,
               variant: "error",
               duration: 8000,
             },
@@ -62,27 +55,9 @@ Use branch_switch to switch to it, or choose a different name.`;
         } catch {
           // Toast failure is non-fatal
         }
-        return `✗ Error creating branch: ${error.message || error}`;
       }
 
-      // Notify via toast
-      try {
-        await client.tui.showToast({
-          body: {
-            title: `Branch: ${branchName}`,
-            message: `Created and checked out`,
-            variant: "success",
-            duration: 4000,
-          },
-        });
-      } catch {
-        // Toast failure is non-fatal
-      }
-
-      return `✓ Created and switched to branch: ${branchName}
-
-You are now on branch '${branchName}'.
-Make your changes and commit when ready.`;
+      return result.text;
     },
   });
 }
@@ -118,7 +93,7 @@ export const status = tool({
     }
 
     // Check if protected
-    isProtected = PROTECTED_BRANCHES.includes(currentBranch);
+    isProtected = (PROTECTED_BRANCHES as readonly string[]).includes(currentBranch);
 
     // Check for changes
     try {
@@ -193,34 +168,8 @@ export const switch_ = tool({
     branch: tool.schema.string().describe("Branch name to switch to"),
   },
   async execute(args, context) {
-    const { branch } = args;
-
-    // Check if branch exists
-    try {
-      const { stdout } = await git(context.worktree, "branch", "--list", branch);
-      if (!stdout.trim()) {
-        // Try remote branch
-        const { stdout: remoteBranches } = await git(context.worktree, "branch", "-r", "--list", `origin/${branch}`);
-        if (!remoteBranches.trim()) {
-          return `✗ Error: Branch '${branch}' not found locally or on origin.
-
-Use branch_create to create a new branch.`;
-        }
-      }
-    } catch {
-      // Ignore error, try checkout anyway
-    }
-
-    // Switch to branch
-    try {
-      await git(context.worktree, "checkout", branch);
-    } catch (error: any) {
-      return `✗ Error switching branch: ${error.message || error}
-
-You may have uncommitted changes. Commit or stash them first.`;
-    }
-
-    return `✓ Switched to branch: ${branch}`;
+    const result = await branchHandlers.executeSwitch(context.worktree, { branch: args.branch });
+    return result.text;
   },
 });
 

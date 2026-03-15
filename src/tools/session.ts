@@ -3,9 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { git } from "../utils/shell.js";
 import { readSpavnConfig } from "../utils/repl.js";
-
-const SPAVN_DIR = ".spavn";
-const SESSIONS_DIR = "sessions";
+import { SPAVN_DIR, SESSIONS_DIR } from "../utils/constants.js";
+import { getDatePrefix } from "../utils/strings.js";
+import * as sessionHandlers from "./handlers/session.js";
 
 /**
  * Delete session files older than the configured retention period.
@@ -38,26 +38,6 @@ function cleanExpiredSessions(worktree: string): number {
   return deleted;
 }
 
-function getDatePrefix(): string {
-  const now = new Date();
-  return now.toISOString().split("T")[0]; // YYYY-MM-DD
-}
-
-function ensureSessionsDir(worktree: string): string {
-  const spavnPath = path.join(worktree, SPAVN_DIR);
-  const sessionsPath = path.join(spavnPath, SESSIONS_DIR);
-
-  if (!fs.existsSync(sessionsPath)) {
-    fs.mkdirSync(sessionsPath, { recursive: true });
-  }
-
-  return sessionsPath;
-}
-
-function generateSessionId(): string {
-  return Math.random().toString(36).substring(2, 10);
-}
-
 export const save = tool({
   description:
     "Save a session summary with key decisions to .spavn/sessions/",
@@ -84,12 +64,6 @@ export const save = tool({
   async execute(args, context) {
     const { summary, decisions, filesChanged, relatedPlan, branch } = args;
 
-    const sessionsPath = ensureSessionsDir(context.worktree);
-    const datePrefix = getDatePrefix();
-    const sessionId = generateSessionId();
-    const filename = `${datePrefix}-${sessionId}.md`;
-    const filepath = path.join(sessionsPath, filename);
-
     // Get current branch if not provided
     let currentBranch = branch;
     if (!currentBranch) {
@@ -100,6 +74,19 @@ export const save = tool({
         currentBranch = "unknown";
       }
     }
+
+    // Use the handler for core save logic — but the OpenCode plugin version
+    // has richer content (frontmatter, filesChanged, relatedPlan, branch)
+    // that the simplified handler doesn't support. Keep the full logic here.
+    const sessionsPath = path.join(context.worktree, SPAVN_DIR, SESSIONS_DIR);
+    if (!fs.existsSync(sessionsPath)) {
+      fs.mkdirSync(sessionsPath, { recursive: true });
+    }
+
+    const datePrefix = getDatePrefix();
+    const sessionId = Math.random().toString(36).substring(2, 10);
+    const filename = `${datePrefix}-${sessionId}.md`;
+    const filepath = path.join(sessionsPath, filename);
 
     // Build content
     let content = `---
@@ -160,58 +147,8 @@ export const list = tool({
       .describe("Maximum number of sessions to return (default: 10)"),
   },
   async execute(args, context) {
-    const { limit = 10 } = args;
-    const sessionsPath = path.join(context.worktree, SPAVN_DIR, SESSIONS_DIR);
-
-    if (!fs.existsSync(sessionsPath)) {
-      return `No sessions found. The .spavn/sessions/ directory doesn't exist.
-
-Sessions are created when you use session_save after completing work.`;
-    }
-
-    const files = fs
-      .readdirSync(sessionsPath)
-      .filter((f) => f.endsWith(".md"))
-      .sort()
-      .reverse()
-      .slice(0, limit);
-
-    if (files.length === 0) {
-      return "No session summaries found in .spavn/sessions/";
-    }
-
-    let output = `📝 Recent Sessions (showing ${files.length}):\n\n`;
-
-    for (const file of files) {
-      const filepath = path.join(sessionsPath, file);
-      const content = fs.readFileSync(filepath, "utf-8");
-
-      // Parse frontmatter
-      let date = file.substring(0, 10);
-      let branch = "unknown";
-
-      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (frontmatterMatch) {
-        const fm = frontmatterMatch[1];
-        const dateMatch = fm.match(/date:\s*(\S+)/);
-        const branchMatch = fm.match(/branch:\s*(\S+)/);
-
-        if (dateMatch) date = dateMatch[1].split("T")[0];
-        if (branchMatch) branch = branchMatch[1];
-      }
-
-      // Get first line of summary (after frontmatter and heading)
-      const summaryMatch = content.match(/# Session Summary\n\n([^\n]+)/);
-      const summaryPreview = summaryMatch
-        ? summaryMatch[1].substring(0, 80) + (summaryMatch[1].length > 80 ? "..." : "")
-        : "(no summary)";
-
-      output += `• ${date} [${branch}]\n`;
-      output += `  ${summaryPreview}\n`;
-      output += `  File: ${file}\n\n`;
-    }
-
-    return output.trim();
+    const result = sessionHandlers.executeList(context.worktree, { limit: args.limit });
+    return result.text;
   },
 });
 
@@ -221,21 +158,7 @@ export const load = tool({
     filename: tool.schema.string().describe("Session filename"),
   },
   async execute(args, context) {
-    const { filename } = args;
-    const sessionsPath = path.join(context.worktree, SPAVN_DIR, SESSIONS_DIR);
-    const filepath = path.join(sessionsPath, filename);
-
-    if (!fs.existsSync(filepath)) {
-      return `✗ Session not found: ${filename}
-
-Use session_list to see available sessions.`;
-    }
-
-    const content = fs.readFileSync(filepath, "utf-8");
-
-    return `📝 Session: ${filename}
-${"=".repeat(50)}
-
-${content}`;
+    const result = sessionHandlers.executeLoad(context.worktree, { filename: args.filename });
+    return result.text;
   },
 });

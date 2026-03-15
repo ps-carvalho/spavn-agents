@@ -9,26 +9,7 @@
  */
 
 import { tool } from "@opencode-ai/plugin";
-import * as fs from "fs";
-import * as path from "path";
-import {
-  parseTasksWithAC,
-  detectCommands,
-  readSpavnConfig,
-  readReplState,
-  writeReplState,
-  getNextTask,
-  getCurrentTask,
-  isLoopComplete,
-  detectIncompleteState,
-  formatProgress,
-  formatSummary,
-  type ReplState,
-  type ReplTask,
-} from "../utils/repl.js";
-
-const SPAVN_DIR = ".spavn";
-const PLANS_DIR = "plans";
+import * as replHandlers from "./handlers/repl.js";
 
 // ─── repl_init ───────────────────────────────────────────────────────────────
 
@@ -55,87 +36,13 @@ export const init = tool({
       .describe("Max retries per failing task before escalating to user (default: 3)"),
   },
   async execute(args, context) {
-    const cwd = context.worktree;
-    const config = readSpavnConfig(cwd);
-    const { planFilename, buildCommand, testCommand, maxRetries = config.maxRetries ?? 3 } = args;
-
-
-    // 1. Validate plan filename
-    if (!planFilename || planFilename === "." || planFilename === "..") {
-      return `\u2717 Error: Invalid plan filename.`;
-    }
-
-    const plansDir = path.join(cwd, SPAVN_DIR, PLANS_DIR);
-    const planPath = path.resolve(plansDir, planFilename);
-    const resolvedPlansDir = path.resolve(plansDir);
-
-    // Prevent path traversal — resolved path must be strictly inside plans dir
-    if (!planPath.startsWith(resolvedPlansDir + path.sep)) {
-      return `\u2717 Error: Invalid plan filename.`;
-    }
-
-    if (!fs.existsSync(planPath)) {
-      return `\u2717 Error: Plan not found: ${planFilename}\n\nUse plan_list to see available plans.`;
-    }
-
-    const planContent = fs.readFileSync(planPath, "utf-8");
-
-    // 2. Parse tasks from plan (with acceptance criteria)
-    const parsedTasks = parseTasksWithAC(planContent);
-    if (parsedTasks.length === 0) {
-      return `\u2717 Error: No tasks found in plan: ${planFilename}\n\nThe plan must contain unchecked checkbox items (- [ ] ...) in a ## Tasks section.`;
-    }
-
-    // 3. Auto-detect commands (or use overrides)
-    const detected = await detectCommands(cwd);
-    const finalBuild = buildCommand ?? detected.buildCommand;
-    const finalTest = testCommand ?? detected.testCommand;
-
-    // 4. Build initial state
-    const tasks: ReplTask[] = parsedTasks.map((parsed, i) => ({
-      index: i,
-      description: parsed.description,
-      acceptanceCriteria: parsed.acceptanceCriteria,
-      status: "pending" as const,
-      retries: 0,
-      iterations: [],
-    }));
-
-    const state: ReplState = {
-      version: 1,
-      planFilename,
-      startedAt: new Date().toISOString(),
-      buildCommand: finalBuild,
-      testCommand: finalTest,
-      lintCommand: detected.lintCommand,
-      maxRetries,
-      currentTaskIndex: -1,
-      tasks,
-    };
-
-    // 5. Write state
-    writeReplState(cwd, state);
-
-    // 6. Format output
-    const cmdInfo = detected.detected
-      ? `Auto-detected (${detected.framework})`
-      : "Not detected \u2014 provide overrides if needed";
-
-    return `\u2713 REPL loop initialized
-
-Plan: ${planFilename}
-Tasks: ${tasks.length}
-Detection: ${cmdInfo}
-
-Build: ${finalBuild || "(none)"}
-Test:  ${finalTest || "(none)"}
-${detected.lintCommand ? `Lint:  ${detected.lintCommand}` : ""}
-Max retries: ${maxRetries}
-
-First task (#1):
-  "${tasks[0].description}"
-
-Run \`repl_status\` to begin, then implement the task and run build/tests.`;
+    const result = await replHandlers.executeInit(context.worktree, {
+      planFilename: args.planFilename,
+      buildCommand: args.buildCommand,
+      testCommand: args.testCommand,
+      maxRetries: args.maxRetries,
+    });
+    return result.text;
   },
 });
 
@@ -148,24 +55,8 @@ export const status = tool({
     "Call this to decide what to implement next.",
   args: {},
   async execute(args, context) {
-    const state = readReplState(context.worktree);
-    if (!state) {
-      return `\u2717 No REPL loop active.\n\nRun repl_init with a plan filename to start a loop.`;
-    }
-
-    // Auto-advance: if no task is in_progress, promote the next pending task
-    const current = getCurrentTask(state);
-    if (!current && !isLoopComplete(state)) {
-      const next = getNextTask(state);
-      if (next) {
-        next.status = "in_progress";
-        next.startedAt = new Date().toISOString();
-        state.currentTaskIndex = next.index;
-        writeReplState(context.worktree, state);
-      }
-    }
-
-    return `\u2713 REPL Loop Status\n\n${formatProgress(state)}`;
+    const result = replHandlers.executeStatus(context.worktree);
+    return result.text;
   },
 });
 
@@ -186,110 +77,20 @@ export const report = tool({
     detail: tool.schema
       .string()
       .describe("Result details: test output summary, error message, or skip reason"),
+    taskIndex: tool.schema
+      .number()
+      .optional()
+      .describe("Zero-based task index (required for parallel batches, defaults to current task)"),
   },
   async execute(args, context) {
-    const { result, detail } = args;
-    const state = readReplState(context.worktree);
-
-    if (!state) {
-      return `\u2717 No REPL loop active. Run repl_init first.`;
-    }
-
-    // Find the current in_progress task
-    const current = getCurrentTask(state);
-    if (!current) {
-      // Try to find the task at currentTaskIndex
-      if (state.currentTaskIndex >= 0 && state.currentTaskIndex < state.tasks.length) {
-        const task = state.tasks[state.currentTaskIndex];
-        if (task.status === "pending") {
-          task.status = "in_progress";
-        }
-        return processReport(state, task, result, detail, context.worktree);
-      }
-      return `\u2717 No task is currently in progress.\n\nRun repl_status to advance to the next task.`;
-    }
-
-    return processReport(state, current, result, detail, context.worktree);
+    const result = replHandlers.executeReport(context.worktree, {
+      result: args.result,
+      detail: args.detail,
+      taskIndex: args.taskIndex,
+    });
+    return result.text;
   },
 });
-
-/**
- * Process a report for a task and update state.
- */
-function processReport(
-  state: ReplState,
-  task: ReplTask,
-  result: "pass" | "fail" | "skip",
-  detail: string,
-  cwd: string,
-): string {
-  // Record iteration
-  task.iterations.push({
-    at: new Date().toISOString(),
-    result,
-    detail: detail.substring(0, 2000), // Cap detail length
-  });
-
-  const taskNum = task.index + 1;
-  const taskDesc = task.description;
-  let output: string;
-
-  switch (result) {
-    case "pass": {
-      task.status = "passed";
-      task.completedAt = new Date().toISOString();
-      const attempt = task.iterations.length;
-      const suffix = attempt === 1 ? "1st" : attempt === 2 ? "2nd" : attempt === 3 ? "3rd" : `${attempt}th`;
-      output = `\u2713 Task #${taskNum} PASSED (${suffix} attempt)\n  "${taskDesc}"\n  Detail: ${detail.substring(0, 200)}`;
-      break;
-    }
-
-    case "fail": {
-      task.retries += 1;
-      const attempt = task.iterations.length;
-
-      if (task.retries >= state.maxRetries) {
-        // Retries exhausted
-        task.status = "failed";
-        task.completedAt = new Date().toISOString();
-        output = `\u2717 Task #${taskNum} FAILED \u2014 retries exhausted (${attempt}/${state.maxRetries} attempts)\n  "${taskDesc}"\n  Detail: ${detail.substring(0, 200)}\n\n\u2192 ASK THE USER how to proceed. Suggest: fix manually, skip task, or abort loop.`;
-      } else {
-        // Retries remaining — stay in_progress
-        const remaining = state.maxRetries - task.retries;
-        output = `\u26A0 Task #${taskNum} FAILED (attempt ${attempt}/${state.maxRetries})\n  "${taskDesc}"\n  Detail: ${detail.substring(0, 200)}\n\n\u2192 Fix the issue and run build/tests again. ${remaining} retr${remaining > 1 ? "ies" : "y"} remaining.`;
-
-        // Don't advance — keep task in_progress
-        writeReplState(cwd, state);
-        return output;
-      }
-      break;
-    }
-
-    case "skip": {
-      task.status = "skipped";
-      task.completedAt = new Date().toISOString();
-      output = `\u2298 Task #${taskNum} SKIPPED\n  "${taskDesc}"\n  Reason: ${detail.substring(0, 200)}`;
-      break;
-    }
-  }
-
-  // Advance to next task
-  const next = getNextTask(state);
-  if (next) {
-    next.status = "in_progress";
-    next.startedAt = new Date().toISOString();
-    state.currentTaskIndex = next.index;
-    output += `\n\n\u2192 Next: Task #${next.index + 1} "${next.description}"`;
-  } else {
-    // All tasks done
-    state.currentTaskIndex = -1;
-    state.completedAt = new Date().toISOString();
-    output += "\n\n\u2713 All tasks complete. Run repl_summary to generate the results report, then proceed to the quality gate (Step 7).";
-  }
-
-  writeReplState(cwd, state);
-  return output;
-}
 
 // ─── repl_resume ─────────────────────────────────────────────────────────────
 
@@ -300,45 +101,8 @@ export const resume = tool({
     "Call this at the start of a session to recover from crashes or context loss.",
   args: {},
   async execute(args, context) {
-    const state = detectIncompleteState(context.worktree);
-    if (!state) {
-      return `\u2717 No interrupted REPL loop found.\n\nEither no loop has been started, or the previous loop completed normally.`;
-    }
-
-    const total = state.tasks.length;
-    const passed = state.tasks.filter((t) => t.status === "passed").length;
-    const failed = state.tasks.filter((t) => t.status === "failed").length;
-    const skipped = state.tasks.filter((t) => t.status === "skipped").length;
-    const done = passed + failed + skipped;
-    const current = getCurrentTask(state);
-    const next = getNextTask(state);
-
-    const lines: string[] = [];
-    lines.push(`\u2713 Interrupted REPL loop detected`);
-    lines.push("");
-    lines.push(`Plan: ${state.planFilename}`);
-    lines.push(`Progress: ${done}/${total} tasks completed (${passed} passed, ${failed} failed, ${skipped} skipped)`);
-    lines.push(`Started: ${state.startedAt}`);
-
-    if (current) {
-      lines.push("");
-      lines.push(`Interrupted task (#${current.index + 1}):`);
-      lines.push(`  "${current.description}"`);
-      lines.push(`  Status: in_progress (${current.retries} retries so far)`);
-      if (current.iterations.length > 0) {
-        const lastIter = current.iterations[current.iterations.length - 1];
-        lines.push(`  Last attempt: ${lastIter.result} — ${lastIter.detail.substring(0, 100)}`);
-      }
-    } else if (next) {
-      lines.push("");
-      lines.push(`Next pending task (#${next.index + 1}):`);
-      lines.push(`  "${next.description}"`);
-    }
-
-    lines.push("");
-    lines.push(`\u2192 Run repl_status to continue the loop from where it left off.`);
-
-    return lines.join("\n");
+    const result = replHandlers.executeResume(context.worktree);
+    return result.text;
   },
 });
 
@@ -351,11 +115,7 @@ export const summary = tool({
     "or when the loop is terminated.",
   args: {},
   async execute(args, context) {
-    const state = readReplState(context.worktree);
-    if (!state) {
-      return `\u2717 No REPL loop data found.\n\nRun repl_init to start a loop, or this may have been cleaned up already.`;
-    }
-
-    return formatSummary(state);
+    const result = replHandlers.executeSummary(context.worktree);
+    return result.text;
   },
 });

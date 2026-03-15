@@ -40,7 +40,6 @@ vi.mock("../utils/plan-extract.js", () => ({
   parseFrontmatter: vi.fn().mockReturnValue(null),
   upsertFrontmatterField: vi.fn().mockImplementation((content: string) => content),
   TYPE_TO_PREFIX: { feature: "feature", bugfix: "fix", refactor: "refactor" },
-  extractBranch: vi.fn().mockReturnValue(null),
   extractIssueRefs: vi.fn().mockReturnValue([]),
   extractPlanSections: vi.fn().mockReturnValue({}),
   buildPrBodyFromPlan: vi.fn().mockReturnValue(""),
@@ -56,6 +55,26 @@ vi.mock("../tools/coordinate.js", () => ({
   coordinateTasks: vi.fn().mockReturnValue("✓ Coordinated 3 tasks"),
   coordinateAssignSkills: vi.fn().mockReturnValue("✓ Skills assigned"),
   coordinateStatus: vi.fn().mockReturnValue("✓ Coordination Status"),
+}));
+
+// Mock plan tools (shared pure functions imported by mcp-server)
+vi.mock("../tools/plan.js", () => ({
+  executePlanStart: vi.fn().mockReturnValue("✓ Plan skeleton created: test.md"),
+  executePlanInterview: vi.fn().mockReturnValue("✓ Refinement added to test.md"),
+  executePlanApprove: vi.fn().mockReturnValue("✓ Plan approved: test.md"),
+  executePlanEdit: vi.fn().mockReturnValue("✓ Plan updated: test.md"),
+}));
+
+// Mock SpavnCodeBridge (fire-and-forget, no-op in tests)
+vi.mock("../utils/spavn-code-bridge.js", () => ({
+  SpavnCodeBridge: vi.fn(() => ({
+    taskStarted: vi.fn(),
+    taskFinished: vi.fn(),
+    toolCall: vi.fn(),
+    error: vi.fn(),
+    interactionNeeded: vi.fn(),
+    isActive: false,
+  })),
 }));
 
 // We'll import the tool registry after mocking

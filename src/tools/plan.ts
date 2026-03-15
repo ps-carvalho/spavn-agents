@@ -8,39 +8,22 @@ import {
   parseFrontmatter,
   upsertFrontmatterField,
 } from "../utils/plan-extract.js";
-
-const SPAVN_DIR = ".spavn";
-const PLANS_DIR = "plans";
-
-const PROTECTED_BRANCHES = ["main", "master", "develop", "production", "staging"];
+import { readFrontmatterOnly } from "../utils/frontmatter.js";
+import { SPAVN_DIR, PLANS_DIR } from "../utils/constants.js";
+import { slugify, getDatePrefix } from "../utils/strings.js";
+import * as planHandlers from "./handlers/plan.js";
 
 // Extract client type from the plugin input via inference
 type Client = PluginInput["client"];
 
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .substring(0, 50);
-}
-
-function getDatePrefix(): string {
-  const now = new Date();
-  return now.toISOString().split("T")[0]; // YYYY-MM-DD
-}
-
-function ensureSpavnDir(worktree: string): string {
-  const spavnPath = path.join(worktree, SPAVN_DIR);
-  const plansPath = path.join(spavnPath, PLANS_DIR);
-
-  if (!fs.existsSync(plansPath)) {
-    fs.mkdirSync(plansPath, { recursive: true });
-  }
-
-  return plansPath;
-}
+// ─── Re-export shared pure functions from handlers ──────────────────────────
+// These are imported by mcp-server.ts and tests
+export {
+  executePlanStart,
+  executePlanInterview,
+  executePlanApprove,
+  executePlanEdit,
+} from "./handlers/plan.js";
 
 export const save = tool({
   description:
@@ -64,8 +47,14 @@ export const save = tool({
   },
   async execute(args, context) {
     const { title, type, content, tasks, branch } = args;
-    
-    const plansPath = ensureSpavnDir(context.worktree);
+
+    // The OpenCode plugin version has richer save logic (frontmatter, tasks, branch)
+    // that the simplified handler doesn't support. Keep the full logic here.
+    const plansPath = path.join(context.worktree, SPAVN_DIR, PLANS_DIR);
+    if (!fs.existsSync(plansPath)) {
+      fs.mkdirSync(plansPath, { recursive: true });
+    }
+
     const datePrefix = getDatePrefix();
     const slug = slugify(title);
     const filename = `${datePrefix}-${type}-${slug}.md`;
@@ -140,26 +129,19 @@ Use plan_save to create your first plan, or spavn_init to initialize the directo
 
     for (const file of files) {
       const filepath = path.join(plansPath, file);
-      const content = fs.readFileSync(filepath, "utf-8");
 
-      // Parse frontmatter
+      // Parse frontmatter (reads only first 512 bytes)
       let title = file;
       let planType = "unknown";
       let created = "";
       let status = "draft";
 
-      const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (frontmatterMatch) {
-        const fm = frontmatterMatch[1];
-        const titleMatch = fm.match(/title:\s*"?([^"\n]+)"?/);
-        const typeMatch = fm.match(/type:\s*(\w+)/);
-        const createdMatch = fm.match(/created:\s*(\S+)/);
-        const statusMatch = fm.match(/status:\s*(\w+)/);
-
-        if (titleMatch) title = titleMatch[1];
-        if (typeMatch) planType = typeMatch[1];
-        if (createdMatch) created = createdMatch[1].split("T")[0];
-        if (statusMatch) status = statusMatch[1];
+      const fm = readFrontmatterOnly(filepath, 512);
+      if (fm) {
+        if (typeof fm.title === "string") title = fm.title;
+        if (typeof fm.type === "string") planType = fm.type;
+        if (typeof fm.created === "string") created = fm.created.split("T")[0];
+        if (typeof fm.status === "string") status = fm.status;
       }
 
       // Filter by type if specified
@@ -192,13 +174,17 @@ export const load = tool({
       return `✗ Invalid plan filename: path traversal not allowed`;
     }
 
-    if (!fs.existsSync(filepath)) {
-      return `✗ Plan not found: ${filename}
+    let content: string;
+    try {
+      content = fs.readFileSync(filepath, "utf-8");
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        return `✗ Plan not found: ${filename}
 
 Use plan_list to see available plans.`;
+      }
+      throw e;
     }
-
-    const content = fs.readFileSync(filepath, "utf-8");
 
     return `📋 Plan: ${filename}
 ${"=".repeat(50)}
@@ -223,11 +209,14 @@ export const delete_ = tool({
       return `✗ Invalid plan filename: path traversal not allowed`;
     }
 
-    if (!fs.existsSync(filepath)) {
-      return `✗ Plan not found: ${filename}`;
+    try {
+      fs.unlinkSync(filepath);
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+        return `✗ Plan not found: ${filename}`;
+      }
+      throw e;
     }
-
-    fs.unlinkSync(filepath);
 
     return `✓ Deleted plan: ${filename}`;
   },
@@ -274,13 +263,17 @@ export function createCommit(client: Client) {
         return `✗ Invalid plan filename: path traversal not allowed`;
       }
 
-      if (!fs.existsSync(filepath)) {
-        return `✗ Plan not found: ${planFilename}
+      let planContent: string;
+      try {
+        planContent = fs.readFileSync(filepath, "utf-8");
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+          return `✗ Plan not found: ${planFilename}
 
 Use plan_list to see available plans.`;
+        }
+        throw e;
       }
-
-      let planContent = fs.readFileSync(filepath, "utf-8");
       const fm = parseFrontmatter(planContent);
 
       if (!fm) {
@@ -407,6 +400,57 @@ The .spavn/ artifacts are committed. Branch creation happens during handoff.`;
     },
   });
 }
+
+// ─── OpenCode tool wrappers ──────────────────────────────────────────────────
+
+export const start = tool({
+  description:
+    "Create a plan skeleton with title, type, and optional GitHub issue ref. Auto-inits .spavn/ if needed.",
+  args: {
+    title: tool.schema.string().describe("Plan title"),
+    type: tool.schema
+      .enum(["feature", "bugfix", "refactor", "architecture", "spike", "docs"])
+      .describe("Plan type"),
+    issueRef: tool.schema.number().optional().describe("GitHub issue number to reference"),
+  },
+  async execute(args, context) {
+    return planHandlers.executePlanStart(context.worktree, args);
+  },
+});
+
+export const interview = tool({
+  description: "Append Q&A refinement to a draft plan",
+  args: {
+    planFilename: tool.schema.string().describe("Plan filename from .spavn/plans/"),
+    question: tool.schema.string().describe("Refinement question"),
+    answer: tool.schema.string().describe("Answer to the question"),
+  },
+  async execute(args, context) {
+    return planHandlers.executePlanInterview(context.worktree, args);
+  },
+});
+
+export const approve = tool({
+  description: "Update plan status from draft to approved",
+  args: {
+    planFilename: tool.schema.string().describe("Plan filename from .spavn/plans/"),
+  },
+  async execute(args, context) {
+    return planHandlers.executePlanApprove(context.worktree, args);
+  },
+});
+
+export const edit = tool({
+  description:
+    "Edit a plan file: overwrite content while preserving/updating frontmatter updated timestamp",
+  args: {
+    filename: tool.schema.string().describe("Plan filename from .spavn/plans/"),
+    content: tool.schema.string().describe("New plan content"),
+  },
+  async execute(args, context) {
+    return planHandlers.executePlanEdit(context.worktree, args);
+  },
+});
 
 // Export with underscore suffix to avoid reserved word
 export { delete_ as delete };

@@ -146,12 +146,6 @@ export const PRIMARY_AGENTS = ["architect", "implement", "fix"] as const;
 /** Single generic worker replaces all former subagents */
 export const SUBAGENTS = ["worker"] as const;
 
-/** Enhanced skills that replace the former subagent .md files */
-export const ENHANCED_SKILLS = [
-  "audit", "coder", "debug", "devops", "docs-writer",
-  "perf", "refactor", "security", "testing",
-] as const;
-
 /** All agent names combined (3 primary + 1 worker) */
 export const ALL_AGENTS = [...PRIMARY_AGENTS, ...SUBAGENTS] as const;
 

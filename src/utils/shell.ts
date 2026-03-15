@@ -1,4 +1,4 @@
-import { execFile, spawn as cpSpawn } from "child_process";
+import { execFile } from "child_process";
 
 export interface ExecResult {
   stdout: string;
@@ -64,27 +64,6 @@ export function exec(
 }
 
 /**
- * Fire-and-forget spawn. Returns the ChildProcess for PID tracking.
- * Uses child_process.spawn with shell: false (default).
- */
-export function spawn(
-  cmd: string,
-  args: string[],
-  opts: ExecOptions & { stdio?: "ignore" | "pipe" } = {},
-) {
-  const stdio = opts.stdio ?? "ignore";
-  const child = cpSpawn(cmd, args, {
-    cwd: opts.cwd,
-    env: opts.env ?? process.env,
-    stdio: stdio === "pipe" ? ["ignore", "pipe", "pipe"] : "ignore",
-    detached: false,
-  });
-  // Prevent unhandled error crashes on spawn failure
-  child.on("error", () => {});
-  return child;
-}
-
-/**
  * Shorthand for running a git command.
  */
 export async function git(cwd: string, ...args: string[]): Promise<ExecResult> {
@@ -111,42 +90,4 @@ export async function which(bin: string): Promise<string | null> {
   }
 }
 
-/**
- * Send a signal to a process. Returns true if signal was sent, false if
- * the process doesn't exist or we lack permissions.
- */
-export function kill(pid: number, signal: NodeJS.Signals = "SIGTERM"): boolean {
-  try {
-    process.kill(pid, signal);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
-/**
- * Check if a process is alive (sends signal 0 — no actual signal).
- */
-export function isAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Escape a string for safe inclusion in a shell command.
- * Use only when array-based argument passing is impossible (e.g., osascript).
- */
-export function shellEscape(str: string): string {
-  // Replace backslashes first, then other dangerous characters
-  return str
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/'/g, "'\\''")
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$")
-    .replace(/!/g, "\\!");
-}

@@ -7,8 +7,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-
-const SPAVN_DIR = ".spavn";
+import { SPAVN_DIR } from "../utils/constants.js";
 const TASKS_FILE = "tasks.json";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -36,7 +35,6 @@ function tasksPath(worktree: string): string {
 
 function readTasks(worktree: string): TasksState | null {
   const p = tasksPath(worktree);
-  if (!fs.existsSync(p)) return null;
   try {
     return JSON.parse(fs.readFileSync(p, "utf-8"));
   } catch {
@@ -69,11 +67,15 @@ export function coordinateTasks(
     return "✗ Invalid plan filename: path traversal not allowed";
   }
 
-  if (!fs.existsSync(planPath)) {
-    return `✗ Plan not found: ${planFilename}`;
+  let content: string;
+  try {
+    content = fs.readFileSync(planPath, "utf-8");
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      return `✗ Plan not found: ${planFilename}`;
+    }
+    throw e;
   }
-
-  const content = fs.readFileSync(planPath, "utf-8");
 
   // Parse tasks from checkbox items
   const taskRegex = /^-\s*\[[ x]\]\s+(.+)$/gm;

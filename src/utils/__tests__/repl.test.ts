@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import {
-  parseTasksFromPlan,
   parseTasksWithAC,
   detectCommands,
   readReplState,
@@ -13,8 +12,11 @@ import {
   isLoopComplete,
   formatProgress,
   formatSummary,
+  computeBatches,
+  getReadyTasks,
   type ReplState,
   type ReplTask,
+  type TaskBatch,
 } from "../repl.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -25,7 +27,7 @@ function makeTmpDir(): string {
 
 function makeState(overrides: Partial<ReplState> = {}): ReplState {
   return {
-    version: 1,
+    version: 2,
     planFilename: "test-plan.md",
     startedAt: "2026-01-01T00:00:00Z",
     buildCommand: "npm run build",
@@ -42,9 +44,9 @@ function makeState(overrides: Partial<ReplState> = {}): ReplState {
   };
 }
 
-// ─── parseTasksFromPlan ──────────────────────────────────────────────────────
+// ─── parseTasksWithAC (description extraction) ──────────────────────────────
 
-describe("parseTasksFromPlan", () => {
+describe("parseTasksWithAC (description extraction)", () => {
   it("extracts tasks from ## Tasks section", () => {
     const content = `# My Plan
 
@@ -60,8 +62,8 @@ Some summary here.
 ## Notes
 Some notes.
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual([
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual([
       "Create the utility module",
       "Write tests for the module",
       "Update documentation",
@@ -75,8 +77,8 @@ Some notes.
 - [ ] Task 2: Create src/tools/repl.ts
 - [ ] Task 3: Register tools
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual([
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual([
       "Create src/utils/repl.ts",
       "Create src/tools/repl.ts",
       "Register tools",
@@ -89,8 +91,8 @@ Some notes.
 - [ ] Implement feature A
 - [ ] Fix bug B
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Implement feature A", "Fix bug B"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Implement feature A", "Fix bug B"]);
   });
 
   it("returns empty array for plan with no tasks", () => {
@@ -99,7 +101,7 @@ Some notes.
 ## Summary
 Just a summary, no tasks.
 `;
-    expect(parseTasksFromPlan(content)).toEqual([]);
+    expect(parseTasksWithAC(content)).toEqual([]);
   });
 
   it("ignores checked tasks (- [x])", () => {
@@ -109,8 +111,8 @@ Just a summary, no tasks.
 - [ ] Still pending
 - [x] Also done
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Still pending"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Still pending"]);
   });
 
   it("falls back to any checkboxes when no ## Tasks section", () => {
@@ -121,8 +123,8 @@ Some intro.
 - [ ] First thing
 - [ ] Second thing
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["First thing", "Second thing"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["First thing", "Second thing"]);
   });
 
   it("handles asterisk list markers", () => {
@@ -131,8 +133,8 @@ Some intro.
 * [ ] Task with asterisk
 - [ ] Task with dash
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Task with asterisk", "Task with dash"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Task with asterisk", "Task with dash"]);
   });
 
   it("handles case-insensitive Task prefix", () => {
@@ -140,8 +142,8 @@ Some intro.
 
 - [ ] task 1: lowercase prefix
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["lowercase prefix"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["lowercase prefix"]);
   });
 });
 
@@ -638,15 +640,15 @@ describe("formatSummary", () => {
   });
 });
 
-// ─── Additional parseTasksFromPlan edge cases ────────────────────────────────
+// ─── Additional parseTasksWithAC edge cases (description extraction) ─────────
 
-describe("parseTasksFromPlan edge cases", () => {
+describe("parseTasksWithAC edge cases (description extraction)", () => {
   it("returns empty array for empty string", () => {
-    expect(parseTasksFromPlan("")).toEqual([]);
+    expect(parseTasksWithAC("")).toEqual([]);
   });
 
   it("returns empty array for whitespace-only content", () => {
-    expect(parseTasksFromPlan("   \n\n  \n")).toEqual([]);
+    expect(parseTasksWithAC("   \n\n  \n")).toEqual([]);
   });
 
   it("ignores indented checkboxes (not top-level list items)", () => {
@@ -655,9 +657,9 @@ describe("parseTasksFromPlan edge cases", () => {
 - [ ] Top level task
   - [ ] Nested subtask
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     // The regex requires ^[-*] so indented items won't match
-    expect(tasks).toEqual(["Top level task"]);
+    expect(tasks.map((t) => t.description)).toEqual(["Top level task"]);
   });
 
   it("handles multiple ## Tasks sections (uses first one)", () => {
@@ -673,9 +675,9 @@ Some content.
 
 - [ ] Second section task
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     // extractTasksSection stops at the next ## heading
-    expect(tasks).toEqual(["First section task"]);
+    expect(tasks.map((t) => t.description)).toEqual(["First section task"]);
   });
 
   it("handles task descriptions with special characters", () => {
@@ -685,11 +687,11 @@ Some content.
 - [ ] Fix bug #123 (critical)
 - [ ] Add "quoted" strings support
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     expect(tasks).toHaveLength(3);
-    expect(tasks[0]).toContain("`src/utils/repl.ts`");
-    expect(tasks[1]).toContain("#123");
-    expect(tasks[2]).toContain('"quoted"');
+    expect(tasks[0].description).toContain("`src/utils/repl.ts`");
+    expect(tasks[1].description).toContain("#123");
+    expect(tasks[2].description).toContain('"quoted"');
   });
 
   it("strips 'Task' prefix case-insensitively with varying spacing", () => {
@@ -698,8 +700,8 @@ Some content.
 - [ ] TASK 1:  Extra spaces
 - [ ] task 99: High number
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Extra spaces", "High number"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Extra spaces", "High number"]);
   });
 
   it("does not strip partial 'Task' prefix matches", () => {
@@ -707,9 +709,9 @@ Some content.
 
 - [ ] Tasking the team with reviews
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     // "Tasking" should NOT be stripped since it doesn't match "Task N:"
-    expect(tasks).toEqual(["Tasking the team with reviews"]);
+    expect(tasks.map((t) => t.description)).toEqual(["Tasking the team with reviews"]);
   });
 });
 
@@ -1017,16 +1019,170 @@ describe("parseTasksWithAC", () => {
     expect(tasks[0].acceptanceCriteria).toEqual(["Asterisk criterion"]);
   });
 
-  it("is backward-compatible with parseTasksFromPlan", () => {
+  it("returns descriptions alongside acceptance criteria", () => {
     const content = `## Tasks
 
 - [ ] Task 1: Description
   - AC: Some criterion
 - [ ] Task 2: Another
 `;
-    const descriptions = parseTasksFromPlan(content);
     const withAC = parseTasksWithAC(content);
-    expect(descriptions).toEqual(withAC.map((t) => t.description));
+    expect(withAC.map((t) => t.description)).toEqual(["Description", "Another"]);
+  });
+});
+
+// ─── parseTasksWithAC dependency parsing ──────────────────────────────────────
+
+describe("parseTasksWithAC dependency parsing", () => {
+  it("tasks without dependency markers get dependsOn: []", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Write tests
+- [ ] Task 3: Update docs
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks).toHaveLength(3);
+    expect(tasks[0].dependsOn).toEqual([]);
+    expect(tasks[1].dependsOn).toEqual([]);
+    expect(tasks[2].dependsOn).toEqual([]);
+  });
+
+  it("parses single dependency (depends: 1) → dependsOn: [0]", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Write tests (depends: 1)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks).toHaveLength(2);
+    expect(tasks[0].dependsOn).toEqual([]);
+    expect(tasks[1].dependsOn).toEqual([0]);
+  });
+
+  it("parses multiple dependencies (depends: 1, 3) → dependsOn: [0, 2]", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Write tests
+- [ ] Task 3: Update docs
+- [ ] Task 4: Integration (depends: 1, 3)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks).toHaveLength(4);
+    expect(tasks[3].dependsOn).toEqual([0, 2]);
+  });
+
+  it("filters out invalid out-of-range references", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Write tests
+- [ ] Task 3: Depends on nonexistent (depends: 99)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks).toHaveLength(3);
+    expect(tasks[2].dependsOn).toEqual([]);
+  });
+
+  it("handles mixed tasks — some with deps, some without", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Base module
+- [ ] Task 2: Depends on base (depends: 1)
+- [ ] Task 3: Independent task
+- [ ] Task 4: Depends on multiple (depends: 1, 2)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks).toHaveLength(4);
+    expect(tasks[0].dependsOn).toEqual([]);
+    expect(tasks[1].dependsOn).toEqual([0]);
+    expect(tasks[2].dependsOn).toEqual([]);
+    expect(tasks[3].dependsOn).toEqual([0, 1]);
+  });
+
+  it("strips dependency marker from description text", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Write tests for module (depends: 1)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks[1].description).toBe("Write tests for module");
+    expect(tasks[1].description).not.toContain("depends");
+  });
+
+  it("filters non-numeric values in depends, keeps valid ones", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Mixed deps (depends: abc, 1)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks[1].dependsOn).toEqual([0]);
+  });
+
+  it("handles dependency marker with extra whitespace", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Spaced deps (depends:  1 ,  2 )
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks[1].dependsOn).toEqual([0, 1]);
+  });
+
+  it("preserves acceptance criteria alongside dependencies", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+  - AC: Module exports correctly
+- [ ] Task 2: Write tests (depends: 1)
+  - AC: Tests pass
+  - AC: Coverage above 80%
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks[1].description).toBe("Write tests");
+    expect(tasks[1].dependsOn).toEqual([0]);
+    expect(tasks[1].acceptanceCriteria).toEqual([
+      "Tests pass",
+      "Coverage above 80%",
+    ]);
+  });
+
+  it("filters reference to task 0 (1-based 0 converts to -1, invalid)", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Bad ref (depends: 0)
+`;
+    const tasks = parseTasksWithAC(content);
+    // 0 in 1-based → -1 in 0-based → filtered out
+    expect(tasks[1].dependsOn).toEqual([]);
+  });
+
+  it("descriptions do not contain dep markers", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Create module
+- [ ] Task 2: Write tests (depends: 1)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual([
+      "Create module",
+      "Write tests",
+    ]);
+  });
+
+  it("handles partially out-of-range deps — keeps valid, drops invalid", () => {
+    const content = `## Tasks
+
+- [ ] Task 1: Base
+- [ ] Task 2: Middle
+- [ ] Task 3: Mixed refs (depends: 1, 50, 2)
+`;
+    const tasks = parseTasksWithAC(content);
+    expect(tasks[2].dependsOn).toEqual([0, 1]);
   });
 });
 
@@ -1117,5 +1273,244 @@ describe("formatSummary with acceptance criteria", () => {
 
     const output = formatSummary(state);
     expect(output).not.toContain("ACs:");
+  });
+});
+
+// ─── computeBatches ──────────────────────────────────────────────────────────
+
+describe("computeBatches", () => {
+  function makeTask(index: number, dependsOn: number[] = []): ReplTask {
+    return {
+      index,
+      description: `Task ${index + 1}`,
+      acceptanceCriteria: [],
+      status: "pending",
+      retries: 0,
+      iterations: [],
+      dependsOn,
+    };
+  }
+
+  it("linear chain: Task 1 → Task 2 → Task 3 → 3 batches, each with 1 task", () => {
+    const tasks = [
+      makeTask(0),
+      makeTask(1, [0]),
+      makeTask(2, [1]),
+    ];
+    const batches = computeBatches(tasks);
+    expect(batches).toHaveLength(3);
+    expect(batches[0].taskIndices).toEqual([0]);
+    expect(batches[1].taskIndices).toEqual([1]);
+    expect(batches[2].taskIndices).toEqual([2]);
+    expect(batches[0].id).toBe(0);
+    expect(batches[1].id).toBe(1);
+    expect(batches[2].id).toBe(2);
+    expect(batches.every(b => b.status === "pending")).toBe(true);
+  });
+
+  it("diamond dependency: Tasks 1,2 independent, Task 3 depends on both → 2 batches", () => {
+    const tasks = [
+      makeTask(0),
+      makeTask(1),
+      makeTask(2, [0, 1]),
+    ];
+    const batches = computeBatches(tasks);
+    expect(batches).toHaveLength(2);
+    expect(batches[0].taskIndices).toEqual([0, 1]);
+    expect(batches[1].taskIndices).toEqual([2]);
+  });
+
+  it("fully parallel (no deps): 5 tasks, no dependencies → 1 batch with all 5", () => {
+    const tasks = [
+      makeTask(0),
+      makeTask(1),
+      makeTask(2),
+      makeTask(3),
+      makeTask(4),
+    ];
+    const batches = computeBatches(tasks);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].taskIndices).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("circular detection: Task 1 depends on 2, Task 2 depends on 1 → throws Error", () => {
+    const tasks = [
+      makeTask(0, [1]),
+      makeTask(1, [0]),
+    ];
+    expect(() => computeBatches(tasks)).toThrow("Circular dependency");
+  });
+
+  it("empty task list: computeBatches([]) → empty array", () => {
+    expect(computeBatches([])).toEqual([]);
+  });
+
+  it("assigns batchId to each task", () => {
+    const tasks = [
+      makeTask(0),
+      makeTask(1, [0]),
+      makeTask(2),
+    ];
+    computeBatches(tasks);
+    expect(tasks[0].batchId).toBe(0);
+    expect(tasks[1].batchId).toBe(1);
+    expect(tasks[2].batchId).toBe(0);
+  });
+});
+
+// ─── getReadyTasks ───────────────────────────────────────────────────────────
+
+describe("getReadyTasks", () => {
+  it("returns only tasks whose dependencies are satisfied and status is pending", () => {
+    const state = makeState({
+      tasks: [
+        { index: 0, description: "A", acceptanceCriteria: [], status: "passed", retries: 0, iterations: [], dependsOn: [] },
+        { index: 1, description: "B", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [], dependsOn: [0] },
+        { index: 2, description: "C", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [], dependsOn: [1] },
+        { index: 3, description: "D", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [], dependsOn: [] },
+        { index: 4, description: "E", acceptanceCriteria: [], status: "in_progress", retries: 0, iterations: [], dependsOn: [] },
+      ],
+    });
+
+    const ready = getReadyTasks(state);
+    // B is ready (dep 0 is passed), D is ready (no deps, pending)
+    // C is NOT ready (dep 1 is pending), E is NOT ready (in_progress, not pending)
+    expect(ready.map(t => t.description)).toEqual(["B", "D"]);
+  });
+
+  it("considers skipped dependencies as satisfied", () => {
+    const state = makeState({
+      tasks: [
+        { index: 0, description: "A", acceptanceCriteria: [], status: "skipped", retries: 0, iterations: [], dependsOn: [] },
+        { index: 1, description: "B", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [], dependsOn: [0] },
+      ],
+    });
+
+    const ready = getReadyTasks(state);
+    expect(ready.map(t => t.description)).toEqual(["B"]);
+  });
+
+  it("returns empty array when no tasks are ready", () => {
+    const state = makeState({
+      tasks: [
+        { index: 0, description: "A", acceptanceCriteria: [], status: "in_progress", retries: 0, iterations: [], dependsOn: [] },
+        { index: 1, description: "B", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [], dependsOn: [0] },
+      ],
+    });
+
+    const ready = getReadyTasks(state);
+    expect(ready).toEqual([]);
+  });
+
+  it("handles tasks with no dependsOn field (undefined)", () => {
+    const state = makeState({
+      tasks: [
+        { index: 0, description: "A", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [] },
+      ],
+    });
+
+    const ready = getReadyTasks(state);
+    expect(ready.map(t => t.description)).toEqual(["A"]);
+  });
+});
+
+// ─── v1 → v2 migration ──────────────────────────────────────────────────────
+
+describe("v1 to v2 migration", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    fs.mkdirSync(path.join(tmpDir, ".spavn"), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it("migrates v1 state to v2 with empty dependsOn arrays", () => {
+    const v1State = {
+      version: 1,
+      planFilename: "plan.md",
+      startedAt: "2026-01-01T00:00:00Z",
+      buildCommand: "npm run build",
+      testCommand: "npx vitest run",
+      lintCommand: null,
+      maxRetries: 3,
+      currentTaskIndex: 0,
+      tasks: [
+        { index: 0, description: "Task A", acceptanceCriteria: [], status: "passed", retries: 0, iterations: [] },
+        { index: 1, description: "Task B", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [] },
+      ],
+    };
+
+    fs.writeFileSync(
+      path.join(tmpDir, ".spavn", "repl-state.json"),
+      JSON.stringify(v1State, null, 2),
+    );
+
+    const state = readReplState(tmpDir);
+    expect(state).not.toBeNull();
+    expect(state!.version).toBe(2);
+    expect(state!.tasks[0].dependsOn).toEqual([]);
+    expect(state!.tasks[1].dependsOn).toEqual([]);
+  });
+
+  it("preserves existing dependsOn during v1→v2 migration", () => {
+    // A v1 state that somehow already has dependsOn on some tasks
+    const v1State = {
+      version: 1,
+      planFilename: "plan.md",
+      startedAt: "2026-01-01T00:00:00Z",
+      buildCommand: null,
+      testCommand: null,
+      lintCommand: null,
+      maxRetries: 3,
+      currentTaskIndex: -1,
+      tasks: [
+        { index: 0, description: "A", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [], dependsOn: [1] },
+        { index: 1, description: "B", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [] },
+      ],
+    };
+
+    fs.writeFileSync(
+      path.join(tmpDir, ".spavn", "repl-state.json"),
+      JSON.stringify(v1State, null, 2),
+    );
+
+    const state = readReplState(tmpDir);
+    expect(state).not.toBeNull();
+    expect(state!.version).toBe(2);
+    // Existing dependsOn should be preserved
+    expect(state!.tasks[0].dependsOn).toEqual([1]);
+    // Missing dependsOn should be backfilled
+    expect(state!.tasks[1].dependsOn).toEqual([]);
+  });
+
+  it("migrates v0 (no version) through v1 to v2", () => {
+    const v0State = {
+      // no version field
+      planFilename: "plan.md",
+      startedAt: "2026-01-01T00:00:00Z",
+      buildCommand: null,
+      testCommand: null,
+      lintCommand: null,
+      maxRetries: 3,
+      currentTaskIndex: -1,
+      tasks: [
+        { index: 0, description: "A", status: "pending", retries: 0, iterations: [] },
+      ],
+    };
+
+    fs.writeFileSync(
+      path.join(tmpDir, ".spavn", "repl-state.json"),
+      JSON.stringify(v0State, null, 2),
+    );
+
+    const state = readReplState(tmpDir);
+    expect(state).not.toBeNull();
+    expect(state!.version).toBe(2);
+    expect(state!.tasks[0].dependsOn).toEqual([]);
+    expect(state!.tasks[0].acceptanceCriteria).toEqual([]);
   });
 });
