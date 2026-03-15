@@ -2,7 +2,7 @@
   <img src="https://img.shields.io/badge/spavn-agents-111?style=for-the-badge&labelColor=111&color=4d96ff" alt="spavn-agents" height="40">
 </p>
 
-<h3 align="center">Structured AI development workflows for <a href="https://opencode.ai">OpenCode</a>, <a href="https://claude.ai">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a>, and <a href="https://github.com/QwenLM/qwen-code">Qwen CLI</a>.<br>Plan. Build. Ship. With discipline.</h3>
+<h3 align="center">Structured AI development workflows for <a href="https://opencode.ai">OpenCode</a>.<br>Plan. Build. Ship. With discipline.</h3>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/spavn-agents"><img src="https://img.shields.io/npm/v/spavn-agents.svg?style=flat-square&color=4d96ff" alt="npm version"></a>
@@ -15,8 +15,8 @@
   <a href="#-quick-start">Quick Start</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
   <a href="#-architecture">Architecture</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
   <a href="#-agents">Agents</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
-  <a href="#-tools">Tools</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
   <a href="#-skills">Skills</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
+  <a href="#-tools">Tools</a>&nbsp;&nbsp;&bull;&nbsp;&nbsp;
   <a href="#-contributing">Contributing</a>
 </p>
 
@@ -52,32 +52,12 @@ This ensures you get plans that actually solve the right problem — not AI hall
 ## Quick Start
 
 ```bash
-# OpenCode (default)
 npx spavn-agents install              # Add plugin + agents + skills
 npx spavn-agents configure            # Pick your models interactively
-
-# Claude Code
-npx spavn-agents install --target claude   # Render agents + CLAUDE.md
-npx spavn-agents sync --target claude      # Re-sync after DB changes
-
-# Codex CLI
-npx spavn-agents install --target codex    # Render AGENTS.md instructions
-
-# Gemini CLI
-npx spavn-agents install --target gemini   # Render agents + GEMINI.md
-
-# Qwen CLI
-npx spavn-agents install --target qwen     # Render agents + QWEN.md
-
-# Multiple targets
-npx spavn-agents install --target opencode
-npx spavn-agents install --target claude
-npx spavn-agents install --target codex
-npx spavn-agents install --target gemini
-npx spavn-agents install --target qwen
+npx spavn-agents sync                 # Re-sync agents after DB changes
 ```
 
-Your sessions now have **12 specialized agents**, **35 tools**, and **17 domain skills**.
+Your sessions now have **4 agents** (3 primary + 1 worker), **35+ tools**, and **44 skills** (35 knowledge + 9 enhanced).
 
 > **Built-in Agent Replacement** — Spavn automatically disables OpenCode's native `build` and `plan` agents (replaced by `implement` and `architect`). The `architect` agent becomes the default, promoting a planning-first workflow. Native agents are fully restored on `uninstall`.
 
@@ -93,21 +73,17 @@ User Request
     v
  Architect (read-only planning)
     |
-     |-- read-only analysis -----> @security  @explore  @perf
+     |-- read-only analysis -----> @worker (security, perf)
     |
     v
  Implement / Fix (execution)
     |
-    |-- REPL Loop (task-by-task) --> build + test per task
+     |-- REPL Loop (task-by-task) --> @worker (coder) + build + test per task
     |
     v
- Quality Gate (two-phase)
+ Quality Gate (scope-based)
     |
-    |-- Phase 1 (parallel, scope-based):
-    |     @testing  @security  @audit  @docs-writer  @devops  @perf
-    |
-    |-- Phase 2 (cross-agent):
-    |     @testing reacts to @security findings
+     |-- Parallel workers: testing, security, audit, docs-writer, [perf], [devops]
     |
     v
  quality_gate_summary --> GO / NO-GO / GO-WITH-WARNINGS
@@ -126,8 +102,8 @@ Architect Agent                         reads codebase, creates plan with mermai
    "Plan committed. Proceed?"          offers worktree, branch, or stay
 
 Implement Agent                         loads plan, checks git status
-   repl_init → parses tasks + ACs      iterates task-by-task with build+test
-   Quality Gate → 6 agents in parallel  testing + security + audit + docs + devops + perf
+   repl_init → parses tasks + ACs      iterates task-by-task with @worker(coder)
+   Quality Gate → parallel workers    testing + security + audit + docs-writer + [perf] + [devops]
    quality_gate_summary → GO            aggregates findings, recommends go/no-go
    task_finalize                        stages, commits, pushes, opens PR
 ```
@@ -136,40 +112,29 @@ Implement Agent                         loads plan, checks git status
 
 Not every change needs a full audit. The quality gate scales with risk:
 
-| Scope | Criteria | Sub-Agents Launched |
-|-------|----------|-------------------|
-| **Trivial** | Docs, comments, formatting | `@docs-writer` only (or skip) |
-| **Low** | Tests, config files | `@testing` |
-| **Standard** | Normal code changes | `@testing` + `@security` + `@audit` + `@docs-writer` |
-| **High** | Auth, payments, crypto, infra, DB migrations | All 6: `@testing` + `@security` + `@audit` + `@docs-writer` + `@devops` + `@perf` |
+| Scope | Criteria | Workers Launched (skills) |
+|-------|----------|---------------------------|
+| **Trivial** | Docs, comments, formatting | `docs-writer` only (or skip) |
+| **Low** | Tests, config files | `testing` |
+| **Standard** | Normal code changes | `testing` + `security` + `audit` + `docs-writer` |
+| **High** | Auth, payments, crypto, infra, DB migrations | All: `testing` + `security` + `audit` + `docs-writer` + `devops` + `perf` |
 
 ---
 
 ## Spavn Engine
 
-Spavn Agents is backed by a **SQLite data model** at `~/.config/spavn-agents/spavn.db`. Agents, skills, and model configurations are stored in a single source of truth. Target-specific **renderers** transform DB records into each CLI's native format on `install` or `sync`.
+Spavn Agents is backed by a **SQLite data model** at `~/.config/spavn-agents/spavn.db`. Agents, skills, and model configurations are stored in a single source of truth. The **OpenCode renderer** transforms DB records into OpenCode's native agent format on `install` or `sync`.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                       SpavnEngine                           │
 │          AgentStore │ SkillStore │ Models │ Targets           │
 │                  SQLite (spavn.db)                           │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐    │
-│  │  Claude   │ │ OpenCode │ │  Codex   │ │   Gemini     │    │
-│  │ Renderer  │ │ Renderer │ │ Renderer │ │  Renderer    │    │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────┘    │
+│              ┌──────────────────────────┐                    │
+│              │    OpenCode Renderer     │                    │
+│              └──────────────────────────┘                    │
 └──────────────────────────────────────────────────────────────┘
 ```
-
-This means you can install once, then render to as many targets as you need. Four renderers ship out of the box:
-
-| Target | Config Dir | Agent Format | Instructions File |
-|--------|-----------|--------------|-------------------|
-| **Claude Code** | `~/.claude` | Per-agent `.md` with Claude frontmatter | `CLAUDE.md` |
-| **OpenCode** | `~/.config/opencode` | Per-agent `.md` with tools/permission YAML | — |
-| **Codex CLI** | `~/.codex` | Single `agents/AGENTS.md` | `agents/AGENTS.md` |
-| **Gemini CLI** | `~/.gemini` | Per-agent `.md` with Gemini frontmatter | `GEMINI.md` |
-| **Qwen CLI** | `~/.qwen` | Per-agent `.md` with Qwen frontmatter | `QWEN.md` |
 
 Changes to agents or skills in the DB are picked up by `sync` without re-downloading anything.
 
@@ -183,28 +148,45 @@ Handle complex, multi-step work. Use your best model.
 
 | Agent | Role | Key Capabilities |
 |-------|------|-----------------|
-| **architect** | Read-only analysis & planning | Plans with mermaid diagrams, acceptance criteria, NFR analysis. Conducts mandatory requirements interview and plan review before saving. Commits plans and defers branch creation to handoff. Delegates read-only analysis to `@explore`, `@security`, `@perf` only. |
-| **implement** | Full-access development | Skill-aware implementation, REPL loop with ACs, two-phase quality gate, parallel sub-agent orchestration, task finalizer. |
-| **fix** | Quick turnaround bug fixes | Rapid diagnosis, scope-based quality gate, optional REPL loop. Delegates deep debugging to `@debug`. |
+| **architect** | Read-only analysis & planning | Plans with mermaid diagrams, acceptance criteria, NFR analysis. Conducts mandatory requirements interview and plan review before saving. Commits plans and defers branch creation to handoff. Delegates read-only analysis to `@worker` with `security` or `perf` skills. |
+| **implement** | Full-access development | Skill-aware implementation, REPL loop with ACs, scope-based quality gate, parallel worker orchestration, task finalizer. Delegates all coding to `@worker(coder)`. |
+| **fix** | Quick turnaround bug fixes | Rapid diagnosis, scope-based quality gate, optional REPL loop. Delegates deep debugging to `@worker(debug)`. |
 
-### Sub-Agents (9)
+### Worker Agent (1)
 
-Focused specialists launched **automatically** by primary agents. Each auto-loads domain skills for deeper analysis. Use a fast/cheap model.
+A single generic worker that loads **enhanced skills** to perform specialized tasks. Use a fast/cheap model.
 
-| Agent | Role | Auto-Loads Skill | Triggered By |
-|-------|------|-----------------|-------------|
-| **@testing** | Test writing, suite execution, coverage | `testing-strategies` | Implement (standard+high), Fix (low+standard+high) |
-| **@security** | OWASP audit, secrets scan, threat modeling | `security-hardening` | Implement (standard+high), Fix (standard+high), Architect (read-only) |
-| **@explore** | Read-only codebase exploration | — | Architect only (read-only analysis) |
-| **@audit** | Code quality, tech debt, pattern review | `code-quality` | Implement (standard+high) |
-| **@docs-writer** | Auto-documentation generation | — | Implement (standard+high) |
-| **@perf** | Complexity analysis, N+1 detection, bundle impact | `performance-optimization` | Implement (high), Fix (high), Architect (read-only) |
-| **@devops** | CI/CD validation, IaC review | `deployment-automation` | Implement (high, or infra files changed) |
-| **@coder** | Cross-layer implementation, feasibility | Per-layer skills | Implement (3+ layers) |
-| **@refactor** | Behavior-preserving restructuring | `design-patterns` + `code-quality` | Implement (refactor plans) |
-| **@debug** | Root cause analysis, troubleshooting | `testing-strategies` | Fix (complex issues) |
+| Skill | Role | Auto-Loads Linked Skills | Triggered By |
+|-------|------|-------------------------|--------------|
+| **coder** | All implementation tasks | Framework skills (react-patterns, etc.) | Implement (all tasks) |
+| **testing** | Test writing, suite execution, coverage | `testing-strategies` | Quality gate (standard+high) |
+| **security** | OWASP audit, secrets scan, threat modeling | `security-hardening` | Quality gate (standard+high), Architect (read-only) |
+| **audit** | Code quality, tech debt, pattern review | `code-quality` | Quality gate (standard+high) |
+| **docs-writer** | Auto-documentation generation | — | Quality gate (standard+high) |
+| **perf** | Complexity analysis, N+1 detection, bundle impact | `performance-optimization` | Quality gate (high), Architect (read-only) |
+| **devops** | CI/CD validation, IaC review | `deployment-automation` | Quality gate (high or infra changes) |
+| **refactor** | Behavior-preserving restructuring | `design-patterns` + `code-quality` | Implement (refactor plans) |
+| **debug** | Root cause analysis, troubleshooting | `testing-strategies` | Fix (complex issues) |
 
-Sub-agents return **structured reports** with severity levels (`BLOCKING`, `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) that the orchestrating agent uses to decide whether to proceed or fix issues first.
+Workers return **structured reports** with severity levels (`BLOCKING`, `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`) that the orchestrating agent uses to decide whether to proceed or fix issues first.
+
+### Enhanced Skills Architecture
+
+The worker agent is powered by **9 enhanced skills** that replace the former sub-agent system:
+
+| Enhanced Skill | Replaces Former Agent | Purpose |
+|---------------|----------------------|---------|
+| `coder` | `@fullstack`, `@crosslayer` | General-purpose implementation |
+| `testing` | `@testing` | Test generation and validation |
+| `security` | `@security` | Security audits and threat modeling |
+| `audit` | `@audit` | Code quality assessment |
+| `docs-writer` | `@docs-writer` | Automatic documentation |
+| `perf` | `@perf` | Performance analysis |
+| `devops` | `@devops` | CI/CD and infrastructure review |
+| `refactor` | `@refactor` | Behavior-preserving refactoring |
+| `debug` | `@debug` | Root cause analysis |
+
+Plus **35 knowledge skills** (frontend-development, backend-development, ui-design, database-design, etc.) that provide domain expertise.
 
 ### Skill Routing
 
@@ -231,7 +213,7 @@ This ensures visual consistency across all agents and sessions — no more one-o
 
 ## Tools
 
-35 tools bundled and auto-registered. No configuration needed.
+35+ tools bundled and auto-registered. No configuration needed.
 
 <table>
 <tr><td width="50%">
@@ -267,7 +249,7 @@ This ensures visual consistency across all agents and sessions — no more one-o
   - Auto-detects worktree (targets main)
   - Auto-populates PR from `.spavn/plans/`
   - Auto-links issues via `Closes #N`
-- `quality_gate_summary` — Aggregate sub-agent findings, GO/NO-GO recommendation
+- `quality_gate_summary` — Aggregate worker findings, GO/NO-GO recommendation
 
 </td></tr>
 <tr><td colspan="2">
@@ -305,7 +287,11 @@ State persists to `.spavn/repl-state.json` — survives context compaction, sess
 
 ## Skills
 
-17 domain-specific skill packs loaded on demand:
+44 skills loaded on demand — **35 knowledge skills** for domain expertise and **9 enhanced skills** for specialized worker tasks.
+
+### Knowledge Skills (35)
+
+Domain expertise loaded by agents based on project tech stack detection:
 
 | Skill | Covers |
 |-------|--------|
@@ -327,6 +313,47 @@ State persists to `.spavn/repl-state.json` — survives context compaction, sess
 | `monitoring-observability` | Structured logging, metrics, distributed tracing, health checks |
 | `data-engineering` | ETL pipelines, data validation, streaming, message queues, partitioning |
 
+### Framework-Specific Skills (18)
+
+Deep framework knowledge for implementation tasks:
+
+| Skill | Framework |
+|-------|-----------|
+| `react-patterns` | React, hooks, component patterns |
+| `nextjs-patterns` | Next.js App Router, server components |
+| `vue-patterns` | Vue 3, Composition API |
+| `nuxt-patterns` | Nuxt 3, server routes |
+| `svelte-patterns` | Svelte, runes |
+| `sveltekit-patterns` | SvelteKit, load functions |
+| `angular-patterns` | Angular, signals, standalone components |
+| `express-patterns` | Express.js middleware, routing |
+| `fastify-patterns` | Fastify schemas, plugins |
+| `hono-patterns` | Hono, edge runtime |
+| `nestjs-patterns` | NestJS decorators, modules |
+| `laravel-patterns` | Laravel Eloquent, service container |
+| `django-patterns` | Django ORM, class-based views |
+| `electron-patterns` | Electron main/renderer processes |
+| `tauri-patterns` | Tauri Rust backend, frontend integration |
+| `react-native-patterns` | React Native, native modules |
+| `flutter-patterns` | Flutter widgets, state management |
+| `spavn-ui` | Spavn UI component library |
+
+### Enhanced Skills (9)
+
+Specialized capabilities for the worker agent:
+
+| Enhanced Skill | Purpose |
+|---------------|---------|
+| `coder` | General-purpose implementation across all layers |
+| `testing` | Test generation, suite execution, coverage analysis |
+| `security` | OWASP audits, secrets scanning, threat modeling |
+| `audit` | Code quality assessment, tech debt identification |
+| `docs-writer` | Automatic documentation generation |
+| `perf` | Performance profiling, bottleneck detection |
+| `devops` | CI/CD validation, infrastructure review |
+| `refactor` | Behavior-preserving code restructuring |
+| `debug` | Root cause analysis, troubleshooting |
+
 ---
 
 ## Model Configuration
@@ -342,15 +369,21 @@ npx spavn-agents configure --project  # Per-project (saves to .opencode/models.j
 ? Select model for PRIMARY agents (architect, implement, fix):
   Claude Sonnet 4    (anthropic)     Best balance of intelligence and speed
   Claude Opus 4      (anthropic)     Most capable, best for complex architecture
+  o3                 (openai)        Advanced reasoning model
   GPT-4.1            (openai)        Fast multimodal model
   Gemini 2.5 Pro     (google)        Large context window, strong reasoning
+  Grok 3             (xAI)          Powerful general-purpose model
+  DeepSeek R1        (deepseek)      Strong reasoning, open-source
+  Qwen3-Coder-Plus   (qwen)          State-of-the-art code model
   Kimi K2P5          (kimi)          Optimized for code generation
   Enter custom model ID
 
-? Select model for SUBAGENTS (debug, coder, testing, security, devops, audit, ...):
+? Select model for WORKER (coder, testing, security, devops, audit, ...):
   Claude 3.5 Haiku   (anthropic)     Fast and cost-effective
   o4 Mini            (openai)        Fast reasoning, cost-effective
   Gemini 2.5 Flash   (google)        Fast and efficient
+  DeepSeek Chat      (deepseek)      Fast general-purpose chat
+  Grok 3 Mini        (xAI)          Lightweight and fast
   Same as primary
 ```
 
@@ -373,17 +406,16 @@ Step 5   Execute                 Create worktree/branch
 Step 6   REPL Loop               repl_init -> iterate tasks one-by-one
   6a     repl_init               Parse tasks + ACs, detect build/test commands
   6b     repl_status             Get current task with ACs, auto-advance
-  6c     Implement task          Write code to satisfy acceptance criteria
+  6c     Launch @worker(coder)   Delegate implementation to worker with coder skill
   6d     Build + test            Run detected build/test commands
   6e     repl_report             Report pass/fail/skip -> auto-advance or retry
   6f     Loop                    Repeat 6b-6e until all tasks complete
-Step 7   Quality Gate            Two-phase sub-agent review (scope-based)
+Step 7   Quality Gate            Scope-based worker review
   7a     repl_summary            Generate loop results
   7b     Assess scope            Classify changed files by risk tier
-  7c     Phase 1                 Launch sub-agents in parallel
-  7d     Phase 2                 Cross-agent reactions (@testing <- @security)
-  7e     quality_gate_summary    Aggregate findings -> GO / NO-GO
-Step 8   Documentation           Review @docs-writer output or prompt user
+  7c     Launch workers          Parallel workers based on scope
+  7d     quality_gate_summary    Aggregate findings -> GO / NO-GO
+Step 8   Documentation           Review @worker(docs-writer) output or prompt user
 Step 9   session_save            Record what was done and why
 Step 10  task_finalize           Commit, push, create PR (with quality gate in body)
 Step 11  Cleanup                 Remove worktree if applicable
@@ -424,13 +456,13 @@ repl_summary               -> Markdown table for PR body
 ### Quality Gate Example
 
 ```
-quality_gate_summary receives reports from 6 agents:
-  @testing:     PASS — 12 tests written, all passing
-  @security:    PASS WITH WARNINGS — 1 medium finding (XSS in tooltip)
-  @audit:       PASS — score A, no critical issues
-  @docs-writer: 1 feature doc created
-  @devops:      N/A
-  @perf:        PASS — no regressions, all O(n) or better
+quality_gate_summary receives reports from parallel workers:
+  testing:      PASS — 12 tests written, all passing
+  security:     PASS WITH WARNINGS — 1 medium finding (XSS in tooltip)
+  audit:        PASS — score A, no critical issues
+  docs-writer:  1 feature doc created
+  devops:       N/A
+  perf:         PASS — no regressions, all O(n) or better
 
   -> Recommendation: GO-WITH-WARNINGS
   -> Blocker: none
@@ -467,9 +499,8 @@ your-project/
 ## CLI Reference
 
 ```bash
-npx spavn-agents install                              # Install plugin, agents, and skills (OpenCode default)
-npx spavn-agents install --target claude|opencode|codex|gemini|qwen  # Install to specific CLI target
-npx spavn-agents sync --target claude|opencode|codex|gemini|qwen     # Re-render from DB to target
+npx spavn-agents install                              # Install plugin, agents, and skills
+npx spavn-agents sync                                 # Re-render agents from DB to OpenCode config
 npx spavn-agents configure                            # Global model selection
 npx spavn-agents configure --project                  # Per-project model selection
 npx spavn-agents configure --reset                    # Reset global models
@@ -482,7 +513,7 @@ npx spavn-agents status                               # Show installation, model
 
 ## Requirements
 
-- [OpenCode](https://opencode.ai) >= 1.0.0, [Claude Code](https://claude.ai), [Codex CLI](https://github.com/openai/codex), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Qwen CLI](https://github.com/QwenLM/qwen-code)
+- [OpenCode](https://opencode.ai) >= 1.0.0
 - Node.js >= 18.0.0
 - Git (for branch/worktree features)
 - [GitHub CLI](https://cli.github.com/) (optional — for PR creation and issue integration)
@@ -522,6 +553,7 @@ cd ~/.config/opencode && npm unlink spavn-agents && npm install
 ```
 src/
   index.ts                   Plugin entry point, tool registration, event hooks
+  mcp-server.ts              MCP server for standalone CLI usage
   registry.ts                Agent/model registry constants
   cli.ts                     CLI (install, configure, uninstall, status)
   engine/
@@ -534,15 +566,12 @@ src/
     seed.ts                  Import .opencode/ → DB
     renderers/
       index.ts               Renderer interface + registry
-      claude.ts              Claude Code renderer
       opencode.ts            OpenCode renderer
-      codex.ts               Codex CLI renderer
-      gemini.ts              Gemini CLI renderer
   tools/
     engine.ts                Engine-backed MCP tools
     repl.ts                  REPL loop tools (init, status, report, resume, summary)
     quality-gate.ts          Quality gate aggregation tool
-    spavn.ts                Project initialization tools
+    spavn.ts                 Project initialization tools
     worktree.ts              Git worktree tools
     branch.ts                Git branch tools
     plan.ts                  Plan persistence tools
@@ -557,34 +586,49 @@ src/
     shell.ts                 Shell command helpers
     github.ts                GitHub API helpers
     worktree-detect.ts       Worktree detection
+    spavn-code-bridge.ts     Spavn Code integration bridge
+    propagate.ts             Usage propagation utilities
   __tests__/                 Test files mirror src/ structure
 .opencode/
-  agents/                    12 agent definition files (.md frontmatter)
-  skills/                    17 skill pack directories (SKILL.md each)
+  agents/                    4 agent definition files (architect, implement, fix, worker)
+  skills/                    44 skill packs (35 knowledge + 9 enhanced)
 ```
 
 ### What We're Looking For
 
 | Type | Examples | Difficulty |
 |------|----------|-----------|
-| **New skills** | Rust, Go, AWS, Terraform, GraphQL | Easy — add a `SKILL.md` file |
-| **New agents** | Reviewer, migration specialist, API designer | Medium — agent `.md` + registry update |
+| **New knowledge skills** | Rust, Go, AWS, Terraform, GraphQL, Solidity | Easy — add a `SKILL.md` file |
+| **New framework skills** | New frontend/backend framework patterns | Easy — add framework-specific skill |
+| **New enhanced skills** | New worker capabilities (beyond the current 9) | Medium — enhanced skill with behavior definition |
 | **Tool improvements** | Better PR templates, test runners, linter integration | Medium — TypeScript + tests |
-| **Quality gate enhancements** | New parsers for agent report formats, smarter severity mapping | Medium |
+| **Quality gate enhancements** | New parsers for worker report formats, smarter severity mapping | Medium |
+| **Renderer improvements** | Better output formatting for OpenCode | Medium |
 | **Bug fixes** | Anything that doesn't work as expected | Varies |
 | **Documentation** | Guides, examples, tutorials | Easy |
 
-### Adding a New Skill
+### Adding a New Knowledge Skill
 
 1. Create `.opencode/skills/your-skill/SKILL.md` with frontmatter (`name`, `description`, `license`, `compatibility`)
 2. Write the skill content — patterns, checklists, examples
 3. Update the skill count in tests if applicable
 4. Submit a PR
 
+### Adding a New Enhanced Skill
+
+1. Create `.opencode/skills/your-skill/SKILL.md` with:
+   - `kind: enhanced` in frontmatter
+   - `access_level: read` or `access_level: write`
+   - `output_format:` section defining the structured report format
+   - `linked_skills:` (optional) for related knowledge skills
+2. Define behavioral instructions for the worker agent
+3. Update test expectations in `src/engine/__tests__/engine.test.ts`
+4. Submit a PR
+
 ### Adding a New Agent
 
 1. Create `.opencode/agents/your-agent.md` with frontmatter (`description`, `mode`, `temperature`, `tools`, `permission`)
-2. Add the agent name to `SUBAGENTS` or `PRIMARY_AGENTS` in `src/registry.ts`
+2. Add the agent name to `PRIMARY_AGENTS` or `SUBAGENTS` in `src/registry.ts`
 3. Add an agent description in `AGENT_DESCRIPTIONS` in `src/index.ts`
 4. Update test expectations in `src/__tests__/registry.test.ts`
 5. Submit a PR
@@ -619,5 +663,5 @@ test: add or update tests
 
 <p align="center">
   <br>
-  <sub>Built for the <a href="https://opencode.ai">OpenCode</a>, <a href="https://claude.ai">Claude Code</a>, <a href="https://github.com/openai/codex">Codex CLI</a>, <a href="https://github.com/google-gemini/gemini-cli">Gemini CLI</a>, and <a href="https://github.com/QwenLM/qwen-code">Qwen CLI</a> communities</sub>
+  <sub>Built for the <a href="https://opencode.ai">OpenCode</a> community</sub>
 </p>

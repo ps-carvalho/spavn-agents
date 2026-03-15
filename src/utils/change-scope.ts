@@ -6,6 +6,9 @@
  * trivial changes while ensuring high-risk changes get full coverage.
  */
 
+import * as fs from "fs";
+import * as path from "path";
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type ChangeScope = "trivial" | "low" | "standard" | "high";
@@ -141,14 +144,44 @@ const PERF_PATTERNS = [
 
 // ─── Classification ──────────────────────────────────────────────────────────
 
+// ─── Project-level overrides ─────────────────────────────────────────────
+
+interface ScopeOverrides {
+  high_risk?: string[];
+  low_risk?: string[];
+  trivial?: string[];
+  devops?: string[];
+  perf?: string[];
+}
+
+/**
+ * Load project-level scope pattern overrides from .spavn/scope-config.json.
+ */
+function loadScopeOverrides(projectRoot?: string): ScopeOverrides | null {
+  if (!projectRoot) return null;
+  const configPath = path.join(projectRoot, ".spavn", "scope-config.json");
+  try {
+    if (!fs.existsSync(configPath)) return null;
+    return JSON.parse(fs.readFileSync(configPath, "utf-8")) as ScopeOverrides;
+  } catch {
+    return null;
+  }
+}
+
+function toPatterns(strings: string[] | undefined): RegExp[] {
+  if (!strings) return [];
+  return strings.map((s) => new RegExp(s));
+}
+
 /**
  * Classify a set of changed files into a risk scope and determine
  * which sub-agents should be triggered.
  *
  * @param changedFiles - Array of file paths that were created or modified
+ * @param projectRoot - Optional project root to load .spavn/scope-config.json overrides
  * @returns Classification result with scope, rationale, and agent triggers
  */
-export function classifyChangeScope(changedFiles: string[]): ChangeScopeResult {
+export function classifyChangeScope(changedFiles: string[], projectRoot?: string): ChangeScopeResult {
   if (changedFiles.length === 0) {
     return {
       scope: "trivial",
@@ -157,12 +190,20 @@ export function classifyChangeScope(changedFiles: string[]): ChangeScopeResult {
     };
   }
 
-  const hasHighRisk = changedFiles.some((f) => HIGH_RISK_PATTERNS.some((p) => p.test(f)));
-  const hasDevOps = changedFiles.some((f) => DEVOPS_PATTERNS.some((p) => p.test(f)));
-  const hasPerf = changedFiles.some((f) => PERF_PATTERNS.some((p) => p.test(f)));
-  const allTrivial = changedFiles.every((f) => TRIVIAL_PATTERNS.some((p) => p.test(f)));
+  // Merge default patterns with project-level overrides
+  const overrides = loadScopeOverrides(projectRoot);
+  const highRiskPatterns = [...HIGH_RISK_PATTERNS, ...toPatterns(overrides?.high_risk)];
+  const lowRiskPatterns = [...LOW_RISK_PATTERNS, ...toPatterns(overrides?.low_risk)];
+  const trivialPatterns = [...TRIVIAL_PATTERNS, ...toPatterns(overrides?.trivial)];
+  const devopsPatterns = [...DEVOPS_PATTERNS, ...toPatterns(overrides?.devops)];
+  const perfPatterns = [...PERF_PATTERNS, ...toPatterns(overrides?.perf)];
+
+  const hasHighRisk = changedFiles.some((f) => highRiskPatterns.some((p) => p.test(f)));
+  const hasDevOps = changedFiles.some((f) => devopsPatterns.some((p) => p.test(f)));
+  const hasPerf = changedFiles.some((f) => perfPatterns.some((p) => p.test(f)));
+  const allTrivial = changedFiles.every((f) => trivialPatterns.some((p) => p.test(f)));
   const allLowRisk = changedFiles.every((f) =>
-    LOW_RISK_PATTERNS.some((p) => p.test(f)) || TRIVIAL_PATTERNS.some((p) => p.test(f)),
+    lowRiskPatterns.some((p) => p.test(f)) || trivialPatterns.some((p) => p.test(f)),
   );
 
   // Trivial — docs/comments only

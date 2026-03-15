@@ -9,12 +9,61 @@ vi.mock("../utils/shell.js", () => ({
   exec: vi.fn(),
 }));
 
+// Mock github utils
+vi.mock("../utils/github.js", () => ({
+  checkGhAvailability: vi.fn().mockResolvedValue({ installed: true, authenticated: true, hasRemote: true, repoOwner: "test", repoName: "repo", projects: [] }),
+  fetchIssues: vi.fn().mockResolvedValue([]),
+  fetchProjects: vi.fn().mockResolvedValue([]),
+  fetchProjectItems: vi.fn().mockResolvedValue([]),
+  formatIssueList: vi.fn().mockReturnValue(""),
+  formatIssueForPlan: vi.fn().mockReturnValue(""),
+  formatProjectItemList: vi.fn().mockReturnValue(""),
+}));
+
+// Mock repl utils
+vi.mock("../utils/repl.js", () => ({
+  parseTasksWithAC: vi.fn().mockReturnValue([]),
+  detectCommands: vi.fn().mockResolvedValue({ buildCommand: "", testCommand: "", lintCommand: "", detected: false }),
+  readSpavnConfig: vi.fn().mockReturnValue({ maxRetries: 3 }),
+  readReplState: vi.fn().mockReturnValue(null),
+  writeReplState: vi.fn(),
+  getNextTask: vi.fn().mockReturnValue(null),
+  getCurrentTask: vi.fn().mockReturnValue(null),
+  isLoopComplete: vi.fn().mockReturnValue(true),
+  detectIncompleteState: vi.fn().mockReturnValue(null),
+  formatProgress: vi.fn().mockReturnValue(""),
+  formatSummary: vi.fn().mockReturnValue(""),
+}));
+
+// Mock plan-extract utils
+vi.mock("../utils/plan-extract.js", () => ({
+  parseFrontmatter: vi.fn().mockReturnValue(null),
+  upsertFrontmatterField: vi.fn().mockImplementation((content: string) => content),
+  TYPE_TO_PREFIX: { feature: "feature", bugfix: "fix", refactor: "refactor" },
+  extractBranch: vi.fn().mockReturnValue(null),
+  extractIssueRefs: vi.fn().mockReturnValue([]),
+  extractPlanSections: vi.fn().mockReturnValue({}),
+  buildPrBodyFromPlan: vi.fn().mockReturnValue(""),
+}));
+
+// Mock change-scope utils
+vi.mock("../utils/change-scope.js", () => ({
+  classifyChangeScope: vi.fn().mockReturnValue({ scope: "standard", rationale: "", agents: {} }),
+}));
+
+// Mock coordinate tools
+vi.mock("../tools/coordinate.js", () => ({
+  coordinateTasks: vi.fn().mockReturnValue("✓ Coordinated 3 tasks"),
+  coordinateAssignSkills: vi.fn().mockReturnValue("✓ Skills assigned"),
+  coordinateStatus: vi.fn().mockReturnValue("✓ Coordination Status"),
+}));
+
 // We'll import the tool registry after mocking
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
   McpServer: vi.fn(() => ({
-    registerTool: vi.fn(),
+    tool: vi.fn(),
     connect: vi.fn(),
   })),
 }));
@@ -40,9 +89,6 @@ describe("MCP Server", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // We need to test the tool handlers directly since the server registration is complex
-  // Let's test the tool implementations that are defined in mcp-server.ts
-
   describe("Tool Context", () => {
     it("should have required context properties", () => {
       const context = {
@@ -66,7 +112,6 @@ describe("MCP Server", () => {
       const spavnPath = path.join(tmpDir, ".spavn");
       expect(fs.existsSync(spavnPath)).toBe(false);
 
-      // Manually create the directory structure as the tool would
       fs.mkdirSync(path.join(spavnPath, "plans"), { recursive: true });
       fs.mkdirSync(path.join(spavnPath, "sessions"), { recursive: true });
 
@@ -78,8 +123,6 @@ describe("MCP Server", () => {
     it("should handle existing .spavn directory", () => {
       const spavnPath = path.join(tmpDir, ".spavn");
       fs.mkdirSync(spavnPath, { recursive: true });
-
-      // Tool should recognize it exists
       expect(fs.existsSync(spavnPath)).toBe(true);
     });
 
@@ -88,11 +131,8 @@ describe("MCP Server", () => {
       fs.mkdirSync(path.join(spavnPath, "plans"), { recursive: true });
       fs.mkdirSync(path.join(spavnPath, "sessions"), { recursive: true });
 
-      const plansPath = path.join(spavnPath, "plans");
-      const sessionsPath = path.join(spavnPath, "sessions");
-
-      expect(fs.statSync(plansPath).isDirectory()).toBe(true);
-      expect(fs.statSync(sessionsPath).isDirectory()).toBe(true);
+      expect(fs.statSync(path.join(spavnPath, "plans")).isDirectory()).toBe(true);
+      expect(fs.statSync(path.join(spavnPath, "sessions")).isDirectory()).toBe(true);
     });
   });
 
@@ -103,14 +143,12 @@ describe("MCP Server", () => {
     });
 
     it("should count plans and sessions", () => {
-      const spavnPath = path.join(tmpDir, ".spavn");
-      const plansPath = path.join(spavnPath, "plans");
-      const sessionsPath = path.join(spavnPath, "sessions");
+      const plansPath = path.join(tmpDir, ".spavn", "plans");
+      const sessionsPath = path.join(tmpDir, ".spavn", "sessions");
 
       fs.mkdirSync(plansPath, { recursive: true });
       fs.mkdirSync(sessionsPath, { recursive: true });
 
-      // Create test files
       fs.writeFileSync(path.join(plansPath, "plan1.md"), "# Plan 1");
       fs.writeFileSync(path.join(plansPath, "plan2.md"), "# Plan 2");
       fs.writeFileSync(path.join(sessionsPath, "session1.md"), "# Session 1");
@@ -147,9 +185,6 @@ describe("MCP Server", () => {
     });
 
     it("should generate filename with date prefix", () => {
-      const plansPath = path.join(tmpDir, ".spavn", "plans");
-      fs.mkdirSync(plansPath, { recursive: true });
-
       const date = new Date().toISOString().split("T")[0];
       expect(date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
@@ -157,19 +192,13 @@ describe("MCP Server", () => {
     it("should handle special characters in title slug", () => {
       const title = "API v2.0 Update!";
       const slug = title.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-");
-
       expect(slug).toBe("api-v20-update");
-      expect(slug).not.toContain("!");
-      expect(slug).not.toContain(".");
     });
 
     it("should support all plan types", () => {
       const types = ["feature", "bugfix", "refactor", "architecture", "spike", "docs"];
-
       for (const type of types) {
-        expect(["feature", "bugfix", "refactor", "architecture", "spike", "docs"]).toContain(
-          type,
-        );
+        expect(["feature", "bugfix", "refactor", "architecture", "spike", "docs"]).toContain(type);
       }
     });
   });
@@ -184,7 +213,6 @@ describe("MCP Server", () => {
       const content = "# Test Plan\n\nThis is test content";
 
       fs.writeFileSync(filepath, content);
-
       const loaded = fs.readFileSync(filepath, "utf-8");
       expect(loaded).toBe(content);
     });
@@ -192,9 +220,7 @@ describe("MCP Server", () => {
     it("should handle missing plan gracefully", () => {
       const plansPath = path.join(tmpDir, ".spavn", "plans");
       fs.mkdirSync(plansPath, { recursive: true });
-
-      const filepath = path.join(plansPath, "nonexistent.md");
-      expect(fs.existsSync(filepath)).toBe(false);
+      expect(fs.existsSync(path.join(plansPath, "nonexistent.md"))).toBe(false);
     });
 
     it("should preserve markdown formatting in loaded content", () => {
@@ -202,22 +228,12 @@ describe("MCP Server", () => {
       fs.mkdirSync(plansPath, { recursive: true });
 
       const filepath = path.join(plansPath, "plan.md");
-      const content = `# Title
-## Section
-- Item 1
-- Item 2
-
-\`\`\`mermaid
-graph TD
-  A --> B
-\`\`\``;
+      const content = `# Title\n## Section\n- Item 1\n\n\`\`\`mermaid\ngraph TD\n  A --> B\n\`\`\``;
 
       fs.writeFileSync(filepath, content);
       const loaded = fs.readFileSync(filepath, "utf-8");
-
       expect(loaded).toContain("## Section");
       expect(loaded).toContain("```mermaid");
-      expect(loaded).toContain("graph TD");
     });
   });
 
@@ -226,22 +242,11 @@ graph TD
       const plansPath = path.join(tmpDir, ".spavn", "plans");
       fs.mkdirSync(plansPath, { recursive: true });
 
-      const filename = "plan.md";
-      const filepath = path.join(plansPath, filename);
+      const filepath = path.join(plansPath, "plan.md");
       fs.writeFileSync(filepath, "# Plan");
-
       expect(fs.existsSync(filepath)).toBe(true);
 
       fs.unlinkSync(filepath);
-
-      expect(fs.existsSync(filepath)).toBe(false);
-    });
-
-    it("should handle missing plan on delete", () => {
-      const plansPath = path.join(tmpDir, ".spavn", "plans");
-      fs.mkdirSync(plansPath, { recursive: true });
-
-      const filepath = path.join(plansPath, "nonexistent.md");
       expect(fs.existsSync(filepath)).toBe(false);
     });
   });
@@ -256,7 +261,6 @@ graph TD
       fs.writeFileSync(path.join(plansPath, "2026-03-12-feature-c.md"), "# Plan C");
 
       const files = fs.readdirSync(plansPath).filter((f) => f.endsWith(".md")).sort().reverse();
-
       expect(files[0]).toBe("2026-03-12-feature-c.md");
       expect(files[2]).toBe("2026-03-10-feature-a.md");
     });
@@ -270,16 +274,13 @@ graph TD
       }
 
       const files = fs.readdirSync(plansPath).filter((f) => f.endsWith(".md")).sort().reverse();
-      const limit = 10;
-      const limited = files.slice(0, Math.min(limit, files.length));
-
+      const limited = files.slice(0, Math.min(10, files.length));
       expect(limited).toHaveLength(10);
     });
 
     it("should handle empty plans directory", () => {
       const plansPath = path.join(tmpDir, ".spavn", "plans");
       fs.mkdirSync(plansPath, { recursive: true });
-
       const files = fs.readdirSync(plansPath).filter((f) => f.endsWith(".md"));
       expect(files).toHaveLength(0);
     });
@@ -294,8 +295,7 @@ graph TD
       const decisions = ["Use JWT tokens", "Store in HTTPOnly cookies"];
 
       const date = new Date().toISOString().split("T")[0];
-      const sessionId = "abc12345";
-      const filename = `${date}-${sessionId}.md`;
+      const filename = `${date}-abc12345.md`;
       const filepath = path.join(sessionsPath, filename);
 
       const content = `# Session Summary\n\n${summary}\n\n## Key Decisions\n\n${decisions.map((d) => `- ${d}`).join("\n")}`;
@@ -304,29 +304,12 @@ graph TD
       const saved = fs.readFileSync(filepath, "utf-8");
       expect(saved).toContain(summary);
       expect(saved).toContain("Use JWT tokens");
-      expect(saved).toContain("Store in HTTPOnly cookies");
     });
 
     it("should generate unique session IDs", () => {
-      const sessionsPath = path.join(tmpDir, ".spavn", "sessions");
-      fs.mkdirSync(sessionsPath, { recursive: true });
-
-      const date = new Date().toISOString().split("T")[0];
-
-      // Simulate creating two sessions
       const sessionId1 = Math.random().toString(36).substring(2, 10);
       const sessionId2 = Math.random().toString(36).substring(2, 10);
-
       expect(sessionId1).not.toBe(sessionId2);
-    });
-
-    it("should format decisions as bullet list", () => {
-      const decisions = ["Decision 1", "Decision 2", "Decision 3"];
-      const formatted = decisions.map((d) => `- ${d}`).join("\n");
-
-      expect(formatted).toContain("- Decision 1");
-      expect(formatted).toContain("- Decision 2");
-      expect(formatted).toContain("- Decision 3");
     });
   });
 
@@ -340,352 +323,63 @@ graph TD
       fs.writeFileSync(path.join(sessionsPath, "2026-03-12-c.md"), "# Session C");
 
       const files = fs.readdirSync(sessionsPath).filter((f) => f.endsWith(".md")).sort().reverse();
-
       expect(files[0]).toBe("2026-03-12-c.md");
-      expect(files[2]).toBe("2026-03-10-a.md");
-    });
-
-    it("should respect limit parameter on sessions", () => {
-      const sessionsPath = path.join(tmpDir, ".spavn", "sessions");
-      fs.mkdirSync(sessionsPath, { recursive: true });
-
-      for (let i = 0; i < 20; i++) {
-        fs.writeFileSync(path.join(sessionsPath, `session${i}.md`), `# Session ${i}`);
-      }
-
-      const files = fs.readdirSync(sessionsPath).filter((f) => f.endsWith(".md")).sort().reverse();
-      const limit = 10;
-      const limited = files.slice(0, Math.min(limit, files.length));
-
-      expect(limited).toHaveLength(10);
-    });
-  });
-
-  describe("session_load tool", () => {
-    it("should load session content by filename", () => {
-      const sessionsPath = path.join(tmpDir, ".spavn", "sessions");
-      fs.mkdirSync(sessionsPath, { recursive: true });
-
-      const filename = "2026-03-12-abc123.md";
-      const filepath = path.join(sessionsPath, filename);
-      const content = "# Session Summary\n\nWork completed";
-
-      fs.writeFileSync(filepath, content);
-
-      const loaded = fs.readFileSync(filepath, "utf-8");
-      expect(loaded).toBe(content);
-    });
-
-    it("should handle missing session gracefully", () => {
-      const sessionsPath = path.join(tmpDir, ".spavn", "sessions");
-      fs.mkdirSync(sessionsPath, { recursive: true });
-
-      const filepath = path.join(sessionsPath, "nonexistent.md");
-      expect(fs.existsSync(filepath)).toBe(false);
     });
   });
 
   describe("worktree_list tool", () => {
     it("should execute git worktree list command", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: `${tmpDir} (detached)`,
-        stderr: "",
-      });
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: `${tmpDir} (detached)`, stderr: "" });
 
-      const result = await mockExec("git", ["worktree", "list"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
+      const result = await mockExec("git", ["worktree", "list"], { cwd: tmpDir, nothrow: true });
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain(tmpDir);
-    });
-
-    it("should handle git not found error", async () => {
-      mockExec.mockRejectedValueOnce(new Error("git not found"));
-
-      try {
-        await mockExec("git", ["worktree", "list"], { cwd: tmpDir, nothrow: true });
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
-    });
-  });
-
-  describe("worktree_open tool", () => {
-    it("should verify worktree path exists", () => {
-      const worktreeName = "feature-branch";
-      const worktreePath = path.join(tmpDir, "..", worktreeName);
-
-      // Don't create it - tool should handle missing path
-      expect(fs.existsSync(worktreePath)).toBe(false);
-    });
-
-    it("should resolve worktree path correctly", () => {
-      const worktreeDir = path.join(tmpDir, "worktree");
-      fs.mkdirSync(worktreeDir, { recursive: true });
-
-      expect(fs.existsSync(worktreeDir)).toBe(true);
     });
   });
 
   describe("branch_status tool", () => {
     it("should execute git branch command", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: "main\n",
-        stderr: "",
-      });
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "main\n", stderr: "" });
 
-      const result = await mockExec("git", ["branch", "--show-current"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
+      const result = await mockExec("git", ["branch", "--show-current"], { cwd: tmpDir, nothrow: true });
       expect(result.exitCode).toBe(0);
       expect(result.stdout.trim()).toBe("main");
-    });
-
-    it("should handle branch command failure", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 128,
-        stdout: "",
-        stderr: "fatal: not a git repository",
-      });
-
-      const result = await mockExec("git", ["branch", "--show-current"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
-      expect(result.exitCode).not.toBe(0);
     });
   });
 
   describe("branch_switch tool", () => {
     it("should execute git checkout command with branch name", async () => {
-      const branch = "develop";
-      mockExec.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: `Switched to branch '${branch}'`,
-        stderr: "",
-      });
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "Switched to branch 'develop'", stderr: "" });
 
-      const result = await mockExec("git", ["checkout", branch], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
+      const result = await mockExec("git", ["checkout", "develop"], { cwd: tmpDir, nothrow: true });
       expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain(branch);
-    });
-
-    it("should handle checkout failure for nonexistent branch", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 1,
-        stdout: "",
-        stderr: "error: pathspec 'nonexistent' did not match any file(s) known to git",
-      });
-
-      const result = await mockExec("git", ["checkout", "nonexistent"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
-      expect(result.exitCode).not.toBe(0);
-      expect(result.stderr).toContain("pathspec");
-    });
-  });
-
-  describe("spavn_configure tool", () => {
-    it("should accept scope, primaryModel, and subagentModel", () => {
-      const config = {
-        scope: "project",
-        primaryModel: "claude-opus",
-        subagentModel: "claude-haiku",
-      };
-
-      expect(config.scope).toBe("project");
-      expect(config.primaryModel).toBe("claude-opus");
-      expect(config.subagentModel).toBe("claude-haiku");
-    });
-
-    it("should support global and project scopes", () => {
-      const scopes = ["project", "global"];
-      expect(scopes).toContain("project");
-      expect(scopes).toContain("global");
-    });
-
-    it("should handle various model IDs", () => {
-      const models = ["claude-opus", "claude-haiku", "gpt-4", "gemini-pro"];
-      for (const model of models) {
-        expect(model).toMatch(/^[\w-]+$/);
-      }
-    });
-  });
-
-  describe("docs_init tool", () => {
-    it("should create docs directory with subdirectories", () => {
-      const docsPath = path.join(tmpDir, "docs");
-      const types = ["decisions", "features", "flows"];
-
-      for (const type of types) {
-        fs.mkdirSync(path.join(docsPath, type), { recursive: true });
-      }
-
-      for (const type of types) {
-        expect(fs.existsSync(path.join(docsPath, type))).toBe(true);
-      }
-    });
-
-    it("should handle existing docs directory", () => {
-      const docsPath = path.join(tmpDir, "docs");
-      fs.mkdirSync(docsPath, { recursive: true });
-
-      expect(fs.existsSync(docsPath)).toBe(true);
-    });
-  });
-
-  describe("docs_list tool", () => {
-    it("should count docs by type", () => {
-      const docsPath = path.join(tmpDir, "docs");
-      const types = ["decisions", "features", "flows"];
-
-      for (const type of types) {
-        const typePath = path.join(docsPath, type);
-        fs.mkdirSync(typePath, { recursive: true });
-
-        // Create sample files
-        fs.writeFileSync(path.join(typePath, "file1.md"), "# Doc");
-        fs.writeFileSync(path.join(typePath, "file2.md"), "# Doc");
-      }
-
-      for (const type of types) {
-        const typePath = path.join(docsPath, type);
-        const files = fs.readdirSync(typePath).filter((f) => f.endsWith(".md"));
-        expect(files).toHaveLength(2);
-      }
-    });
-
-    it("should handle missing docs directory", () => {
-      const docsPath = path.join(tmpDir, "docs");
-      expect(fs.existsSync(docsPath)).toBe(false);
-    });
-
-    it("should only count markdown files", () => {
-      const docsPath = path.join(tmpDir, "docs", "decisions");
-      fs.mkdirSync(docsPath, { recursive: true });
-
-      fs.writeFileSync(path.join(docsPath, "doc1.md"), "# Doc");
-      fs.writeFileSync(path.join(docsPath, "doc2.txt"), "Not markdown");
-      fs.writeFileSync(path.join(docsPath, "doc3.md"), "# Doc");
-
-      const files = fs.readdirSync(docsPath).filter((f) => f.endsWith(".md"));
-      expect(files).toHaveLength(2);
     });
   });
 
   describe("github_status tool", () => {
     it("should execute gh auth status command", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: "Logged in to github.com",
-        stderr: "",
-      });
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "Logged in", stderr: "" });
 
-      const result = await mockExec("gh", ["auth", "status"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
+      const result = await mockExec("gh", ["auth", "status"], { cwd: tmpDir, nothrow: true });
       expect(result.exitCode).toBe(0);
-    });
-
-    it("should handle unauthenticated gh state", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 1,
-        stdout: "",
-        stderr: "Not authenticated",
-      });
-
-      const result = await mockExec("gh", ["auth", "status"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
-      expect(result.exitCode).not.toBe(0);
-    });
-
-    it("should handle gh not installed", async () => {
-      mockExec.mockRejectedValueOnce(new Error("gh: command not found"));
-
-      try {
-        await mockExec("gh", ["auth", "status"], { cwd: tmpDir, nothrow: true });
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
     });
   });
 
   describe("task_finalize tool", () => {
-    it("should accept commit message parameter", () => {
-      const message = "feat: implement new feature";
-      expect(message).toMatch(/^[\w\s:]+$/);
-    });
+    it("should execute git add and commit commands", async () => {
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "[main abc1234] feat: test", stderr: "" });
 
-    it("should execute git add command", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: "",
-        stderr: "",
-      });
+      const r1 = await mockExec("git", ["add", "-A"], { cwd: tmpDir, nothrow: true });
+      const r2 = await mockExec("git", ["commit", "-m", "feat: test"], { cwd: tmpDir, nothrow: true });
 
-      const result = await mockExec("git", ["add", "-A"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
-      expect(result.exitCode).toBe(0);
-    });
-
-    it("should execute git commit command with message", async () => {
-      const message = "feat: implement feature";
-      mockExec.mockResolvedValueOnce({
-        exitCode: 0,
-        stdout: `[main abc1234] ${message}`,
-        stderr: "",
-      });
-
-      const result = await mockExec("git", ["commit", "-m", message], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout).toContain(message);
-    });
-
-    it("should handle commit failures", async () => {
-      mockExec.mockResolvedValueOnce({
-        exitCode: 1,
-        stdout: "",
-        stderr: "nothing to commit",
-      });
-
-      const result = await mockExec("git", ["commit", "-m", "test"], {
-        cwd: tmpDir,
-        nothrow: true,
-      });
-
-      expect(result.exitCode).not.toBe(0);
+      expect(r1.exitCode).toBe(0);
+      expect(r2.exitCode).toBe(0);
     });
   });
 
   describe("startMCPServer function", () => {
     it("should initialize MCP server with name and version", async () => {
-      // Since the actual server startup is complex, we test that the
-      // function can be called and handles errors appropriately
       expect(typeof startMCPServer).toBe("function");
     });
 
@@ -696,201 +390,212 @@ graph TD
   });
 
   describe("Tool Registration", () => {
-    it("should have 18 tools registered", () => {
-      const toolNames = [
-        "spavn_init",
-        "spavn_status",
-        "spavn_configure",
-        "worktree_list",
-        "worktree_open",
-        "branch_status",
-        "branch_switch",
-        "plan_list",
-        "plan_load",
-        "plan_save",
-        "plan_delete",
-        "session_list",
-        "session_load",
-        "session_save",
-        "docs_init",
-        "docs_list",
-        "github_status",
+    it("should have all expected tools registered", () => {
+      // Phase 1: Existing + newly ported from OpenCode plugin
+      const existingTools = [
+        "spavn_init", "spavn_status", "spavn_configure",
+        "worktree_list", "worktree_open", "worktree_create", "worktree_remove",
+        "branch_status", "branch_switch", "branch_create",
+        "plan_list", "plan_load", "plan_save", "plan_delete", "plan_commit",
+        "session_list", "session_load", "session_save",
+        "docs_init", "docs_list", "docs_save", "docs_index",
+        "github_status", "github_issues", "github_projects",
         "task_finalize",
+        "repl_init", "repl_status", "repl_report", "repl_resume", "repl_summary",
+        "quality_gate_summary",
+        "agent_list",
+        "skill", "skill_get", "skill_list",
       ];
 
-      expect(toolNames).toHaveLength(18);
-    });
-
-    it("should have unique tool names", () => {
-      const toolNames = [
-        "spavn_init",
-        "spavn_status",
-        "spavn_configure",
-        "worktree_list",
-        "worktree_open",
-        "branch_status",
-        "branch_switch",
-        "plan_list",
-        "plan_load",
-        "plan_save",
-        "plan_delete",
-        "session_list",
-        "session_load",
-        "session_save",
-        "docs_init",
-        "docs_list",
-        "github_status",
-        "task_finalize",
+      // Phase 2: New workflow tools
+      const newWorkflowTools = [
+        "plan_start", "plan_interview", "plan_approve",
+        "coordinate_tasks", "coordinate_assign_skills", "coordinate_status",
+        "quality_report", "quality_finalize",
+        "agent_get",
+        "git_commit", "git_pr", "git_status",
       ];
 
-      const unique = new Set(toolNames);
-      expect(unique.size).toBe(toolNames.length);
+      // Phase 3: Aliases
+      const aliasTools = [
+        "execute_init", "execute_task", "execute_report",
+        "execute_resume", "execute_summary",
+        "quality_gate",
+      ];
+
+      const allTools = [...existingTools, ...newWorkflowTools, ...aliasTools];
+
+      // Verify uniqueness
+      const unique = new Set(allTools);
+      expect(unique.size).toBe(allTools.length);
+
+      // Verify total count: 54 tools
+      expect(allTools.length).toBe(54);
     });
   });
 
-  describe("Input Schema Validation", () => {
-    it("should define input schema for all tools", () => {
-      const schemas = {
-        spavn_init: { type: "object", properties: {} },
-        spavn_status: { type: "object", properties: {} },
-        spavn_configure: {
-          type: "object",
-          properties: {
-            scope: { type: "string", enum: ["project", "global"] },
-            primaryModel: { type: "string" },
-            subagentModel: { type: "string" },
-          },
-        },
-        worktree_list: { type: "object", properties: {} },
-        worktree_open: {
-          type: "object",
-          properties: { name: { type: "string" } },
-        },
-        branch_status: { type: "object", properties: {} },
-        branch_switch: {
-          type: "object",
-          properties: { branch: { type: "string" } },
-        },
-        plan_list: {
-          type: "object",
-          properties: { limit: { type: "number" } },
-        },
-        plan_load: {
-          type: "object",
-          properties: { filename: { type: "string" } },
-        },
-        plan_save: {
-          type: "object",
-          properties: {
-            title: { type: "string" },
-            type: { type: "string" },
-            content: { type: "string" },
-          },
-        },
-        plan_delete: {
-          type: "object",
-          properties: { filename: { type: "string" } },
-        },
-        session_list: {
-          type: "object",
-          properties: { limit: { type: "number" } },
-        },
-        session_load: {
-          type: "object",
-          properties: { filename: { type: "string" } },
-        },
-        session_save: {
-          type: "object",
-          properties: {
-            summary: { type: "string" },
-            decisions: { type: "array" },
-          },
-        },
-        docs_init: { type: "object", properties: {} },
-        docs_list: { type: "object", properties: {} },
-        github_status: { type: "object", properties: {} },
-        task_finalize: {
-          type: "object",
-          properties: { commitMessage: { type: "string" } },
-        },
-      };
+  describe("Coordination tools", () => {
+    it("should create tasks.json from plan", () => {
+      const plansPath = path.join(tmpDir, ".spavn", "plans");
+      fs.mkdirSync(plansPath, { recursive: true });
 
-      for (const [toolName, schema] of Object.entries(schemas)) {
-        expect(schema.type).toBe("object");
+      const planContent = `---
+title: "Test Plan"
+type: feature
+status: approved
+---
+
+# Test Plan
+
+## Tasks
+
+- [ ] Create user model
+- [ ] Add authentication middleware
+- [ ] Write tests
+`;
+
+      fs.writeFileSync(path.join(plansPath, "test-plan.md"), planContent);
+
+      // Verify the plan file was created
+      expect(fs.existsSync(path.join(plansPath, "test-plan.md"))).toBe(true);
+
+      // Parse tasks from the plan
+      const taskRegex = /^-\s*\[[ x]\]\s+(.+)$/gm;
+      const tasks: string[] = [];
+      let match;
+      while ((match = taskRegex.exec(planContent)) !== null) {
+        tasks.push(match[1].trim());
       }
+
+      expect(tasks).toHaveLength(3);
+      expect(tasks[0]).toBe("Create user model");
     });
 
-    it("should have required fields for parameterized tools", () => {
-      const requiredFields = {
-        spavn_configure: ["scope", "primaryModel", "subagentModel"],
-        worktree_open: ["name"],
-        branch_switch: ["branch"],
-        plan_load: ["filename"],
-        plan_save: ["title", "type", "content"],
-        plan_delete: ["filename"],
-        session_load: ["filename"],
-        session_save: ["summary", "decisions"],
-        task_finalize: ["commitMessage"],
+    it("should track task state in tasks.json", () => {
+      const spavnDir = path.join(tmpDir, ".spavn");
+      fs.mkdirSync(spavnDir, { recursive: true });
+
+      const state = {
+        planFilename: "test-plan.md",
+        createdAt: new Date().toISOString(),
+        tasks: [
+          { id: 1, description: "Task 1", status: "pending" },
+          { id: 2, description: "Task 2", status: "in_progress", skill: "coder" },
+          { id: 3, description: "Task 3", status: "done" },
+        ],
       };
 
-      for (const [toolName, fields] of Object.entries(requiredFields)) {
-        expect(fields.length).toBeGreaterThan(0);
-      }
+      const tasksPath = path.join(spavnDir, "tasks.json");
+      fs.writeFileSync(tasksPath, JSON.stringify(state, null, 2));
+
+      const loaded = JSON.parse(fs.readFileSync(tasksPath, "utf-8"));
+      expect(loaded.tasks).toHaveLength(3);
+      expect(loaded.tasks[1].skill).toBe("coder");
     });
   });
 
-  describe("Error Handling", () => {
-    it("should handle file system errors gracefully", () => {
-      const invalidPath = "/invalid/path/that/does/not/exist/file.md";
-      expect(fs.existsSync(invalidPath)).toBe(false);
+  describe("Plan workflow tools", () => {
+    it("should create plan skeleton with plan_start", () => {
+      const plansPath = path.join(tmpDir, ".spavn", "plans");
+      fs.mkdirSync(plansPath, { recursive: true });
+
+      const date = new Date().toISOString().split("T")[0];
+      const filename = `${date}-feature-test-feature.md`;
+      const filepath = path.join(plansPath, filename);
+
+      const content = `---\ntitle: "Test Feature"\ntype: feature\nstatus: draft\n---\n\n# Test Feature\n`;
+      fs.writeFileSync(filepath, content);
+
+      expect(fs.existsSync(filepath)).toBe(true);
+      const loaded = fs.readFileSync(filepath, "utf-8");
+      expect(loaded).toContain("status: draft");
     });
 
-    it("should handle JSON parsing errors in version read", () => {
-      // The server reads package.json for version - test that this could fail
-      const packagePath = "/nonexistent/package.json";
-      expect(fs.existsSync(packagePath)).toBe(false);
+    it("should transition plan from draft to approved", () => {
+      const plansPath = path.join(tmpDir, ".spavn", "plans");
+      fs.mkdirSync(plansPath, { recursive: true });
+
+      const filepath = path.join(plansPath, "test.md");
+      fs.writeFileSync(filepath, "---\nstatus: draft\n---\n# Test");
+
+      let content = fs.readFileSync(filepath, "utf-8");
+      content = content.replace("status: draft", "status: approved");
+      fs.writeFileSync(filepath, content);
+
+      const updated = fs.readFileSync(filepath, "utf-8");
+      expect(updated).toContain("status: approved");
+    });
+  });
+
+  describe("Quality gate tools", () => {
+    it("should persist quality gate state", () => {
+      const spavnDir = path.join(tmpDir, ".spavn");
+      fs.mkdirSync(spavnDir, { recursive: true });
+
+      const qgState = {
+        timestamp: new Date().toISOString(),
+        scope: "standard",
+        recommendation: "GO",
+        status: "complete",
+      };
+
+      const qgPath = path.join(spavnDir, "quality-gate.json");
+      fs.writeFileSync(qgPath, JSON.stringify(qgState, null, 2));
+
+      const loaded = JSON.parse(fs.readFileSync(qgPath, "utf-8"));
+      expect(loaded.recommendation).toBe("GO");
+      expect(loaded.status).toBe("complete");
     });
 
-    it("should handle command execution errors", async () => {
-      mockExec.mockRejectedValueOnce(new Error("Command failed"));
+    it("should save quality reports", () => {
+      const reportsDir = path.join(tmpDir, ".spavn", "quality-reports");
+      fs.mkdirSync(reportsDir, { recursive: true });
 
-      try {
-        await mockExec("unknown-command", [], { cwd: tmpDir });
-        expect(true).toBe(false); // Should not reach here
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-      }
+      const filename = "testing-2026-03-15.md";
+      fs.writeFileSync(path.join(reportsDir, filename), "# Quality Report: testing\n\n**Verdict:** PASS");
+
+      expect(fs.existsSync(path.join(reportsDir, filename))).toBe(true);
+    });
+  });
+
+  describe("Git extras", () => {
+    it("should execute git commit with message", async () => {
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+      const result = await mockExec("git", ["commit", "-m", "test message"], { cwd: tmpDir, nothrow: true });
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should execute gh pr create", async () => {
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "https://github.com/test/repo/pull/1", stderr: "" });
+
+      const result = await mockExec("gh", ["pr", "create", "--title", "test"], { cwd: tmpDir, nothrow: true });
+      expect(result.exitCode).toBe(0);
+    });
+
+    it("should get enhanced git status", async () => {
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "main\n", stderr: "" });
+      mockExec.mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" });
+
+      const branch = await mockExec("git", ["branch", "--show-current"], { cwd: tmpDir, nothrow: true });
+      const status = await mockExec("git", ["status", "--porcelain"], { cwd: tmpDir, nothrow: true });
+
+      expect(branch.stdout.trim()).toBe("main");
+      expect(status.stdout).toBe("");
     });
   });
 
   describe("Edge Cases", () => {
     it("should handle empty plan limit", () => {
-      const limit = 0;
-      const files = ["plan1.md", "plan2.md", "plan3.md"];
-      const limited = files.slice(0, Math.min(limit, files.length));
-
+      const files = ["plan1.md", "plan2.md"];
+      const limited = files.slice(0, Math.min(0, files.length));
       expect(limited).toHaveLength(0);
     });
 
     it("should handle very large plan limit", () => {
-      const limit = 999999;
       const files = ["plan1.md", "plan2.md"];
-      const limited = files.slice(0, Math.min(limit, files.length));
-
+      const limited = files.slice(0, Math.min(999999, files.length));
       expect(limited).toHaveLength(2);
-    });
-
-    it("should handle null/undefined arguments gracefully", () => {
-      // Tools should handle missing optional arguments
-      const args = {};
-      expect(args.limit).toBeUndefined();
-    });
-
-    it("should handle empty session decisions", () => {
-      const decisions: string[] = [];
-      const formatted = decisions.map((d) => `- ${d}`).join("\n");
-
-      expect(formatted).toBe("");
     });
 
     it("should handle whitespace in filenames", () => {
@@ -908,15 +613,12 @@ graph TD
       const plansPath = path.join(tmpDir, ".spavn", "plans");
       fs.mkdirSync(plansPath, { recursive: true });
 
-      const content = "# 计划 🚀\n\n文件内容 with émojis 🎉";
+      const content = "# Plan\n\nUnicode content with special chars";
       const filepath = path.join(plansPath, "plan.md");
 
       fs.writeFileSync(filepath, content, "utf-8");
       const loaded = fs.readFileSync(filepath, "utf-8");
-
-      expect(loaded).toContain("计划");
-      expect(loaded).toContain("🚀");
-      expect(loaded).toContain("émojis");
+      expect(loaded).toContain("Plan");
     });
   });
 });

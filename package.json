@@ -1,7 +1,7 @@
 {
   "name": "spavn-agents",
   "version": "0.3.0",
-  "description": "Structured AI development workflows for OpenCode and Claude Code — plan, build, ship with discipline",
+  "description": "Structured AI development workflows via MCP — plan, coordinate, execute, quality gate, ship",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -35,7 +35,9 @@
     "notifications",
     "workflow",
     "pull-request",
-    "developer-tools"
+    "developer-tools",
+    "mcp",
+    "quality-gate"
   ],
   "author": "",
   "license": "Apache-2.0",
@@ -64,6 +66,7 @@
   "dependencies": {
     "better-sqlite3": "^12.6.2",
     "prompts": "^2.4.2",
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.0"
   }
 }

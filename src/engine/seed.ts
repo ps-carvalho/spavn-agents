@@ -40,7 +40,6 @@ export function seedDatabase(db: Database.Database, opencodeDir: string): SeedRe
     result.skills = seedSkills(skills, opencodeDir);
     result.models = seedModels(models);
     result.targets = seedTargets(targets);
-    seedAgentTargetConfigs(agents, targets, opencodeDir);
   });
 
   run();
@@ -48,42 +47,6 @@ export function seedDatabase(db: Database.Database, opencodeDir: string): SeedRe
 }
 
 // ---- Agent seeding ---------------------------------------------------------
-
-/** Claude Code native tool name mapping from opencode short names. */
-const CLAUDE_NATIVE_TOOLS: Record<string, string> = {
-  read: "Read",
-  write: "Write",
-  edit: "Edit",
-  bash: "Bash",
-  glob: "Glob",
-  grep: "Grep",
-};
-
-/** Gemini CLI native tool name mapping from opencode short names. */
-const GEMINI_NATIVE_TOOLS: Record<string, string> = {
-  read: "read_file",
-  write: "write_file",
-  edit: "edit_file",
-  bash: "run_shell_command",
-  glob: "glob_tool",
-  grep: "grep_search",
-};
-
-/** Qwen native tool name mapping from opencode short names. */
-const QWEN_NATIVE_TOOLS: Record<string, string> = {
-  read: "read_file",
-  write: "write_file",
-  edit: "edit_file",
-  bash: "run_shell_command",
-  glob: "glob_tool",
-  grep: "grep_search",
-};
-
-/** MCP tool prefix for spavn-agents tools exposed via MCP (Claude uses __). */
-const MCP_PREFIX = "mcp__spavn-agents__";
-
-/** MCP tool prefix for spavn-agents tools exposed via MCP (Gemini uses _). */
-const MCP_PREFIX_GEMINI = "mcp_spavn-agents_";
 
 function seedAgents(store: AgentStore, opencodeDir: string): number {
   const agentsDir = path.join(opencodeDir, "agents");
@@ -259,39 +222,11 @@ function seedModels(store: ModelStore): number {
 
 const BUILTIN_TARGETS = [
   {
-    id: "claude",
-    display_name: "Claude Code",
-    config_dir: "~/.claude",
-    agent_file_format: "claude_md",
-    instructions_file: "CLAUDE.md",
-  },
-  {
     id: "opencode",
     display_name: "OpenCode",
     config_dir: "~/.config/opencode",
     agent_file_format: "opencode_md",
     instructions_file: null,
-  },
-  {
-    id: "codex",
-    display_name: "Codex CLI",
-    config_dir: "~/.codex",
-    agent_file_format: "codex_md",
-    instructions_file: "agents/AGENTS.md",
-  },
-  {
-    id: "gemini",
-    display_name: "Gemini CLI",
-    config_dir: "~/.gemini",
-    agent_file_format: "gemini_md",
-    instructions_file: "GEMINI.md",
-  },
-  {
-    id: "qwen",
-    display_name: "Qwen CLI",
-    config_dir: "~/.qwen",
-    agent_file_format: "qwen_md",
-    instructions_file: "QWEN.md",
   },
 ] as const;
 
@@ -306,115 +241,6 @@ function seedTargets(store: TargetStore): number {
     });
   }
   return BUILTIN_TARGETS.length;
-}
-
-// ---- Agent-target config seeding (Claude + Gemini) -------------------------
-
-function seedAgentTargetConfigs(
-  agentStore: AgentStore,
-  targetStore: TargetStore,
-  opencodeDir: string,
-): void {
-  const agentsDir = path.join(opencodeDir, "agents");
-  if (!fs.existsSync(agentsDir)) return;
-
-  const files = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
-
-  for (const file of files) {
-    const agentId = file.replace(/\.md$/, "");
-    const raw = fs.readFileSync(path.join(agentsDir, file), "utf-8");
-    const parsed = parseFrontmatter(raw);
-    if (!parsed) continue;
-
-    const tools = (parsed.frontmatter.tools as Record<string, unknown>) ?? {};
-
-    // ---- Claude target config ----
-    {
-      const toolsOverride: string[] = [];
-      const disallowedTools: string[] = [];
-
-      for (const [toolName, allowed] of Object.entries(tools)) {
-        const isAllowed = allowed === true || allowed === "true";
-        const claudeName = CLAUDE_NATIVE_TOOLS[toolName];
-
-        if (claudeName) {
-          if (isAllowed) {
-            toolsOverride.push(claudeName);
-          } else {
-            disallowedTools.push(claudeName);
-          }
-        } else {
-          if (isAllowed) {
-            toolsOverride.push(`${MCP_PREFIX}${toolName}`);
-          }
-        }
-      }
-
-      targetStore.upsertAgentTargetConfig({
-        agent_id: agentId,
-        target_id: "claude",
-        native_name: null,
-        tools_override: toolsOverride.length > 0 ? toolsOverride : null,
-        disallowed_tools: disallowedTools.length > 0 ? disallowedTools : null,
-        model_override: "inherit",
-        extra_frontmatter: { mcpServers: "spavn-agents" },
-      });
-    }
-
-    // ---- Gemini target config ----
-    {
-      const toolsOverride: string[] = [];
-
-      for (const [toolName, allowed] of Object.entries(tools)) {
-        const isAllowed = allowed === true || allowed === "true";
-        if (!isAllowed) continue;
-
-        const geminiName = GEMINI_NATIVE_TOOLS[toolName];
-        if (geminiName) {
-          toolsOverride.push(geminiName);
-        } else {
-          toolsOverride.push(`${MCP_PREFIX_GEMINI}${toolName}`);
-        }
-      }
-
-      targetStore.upsertAgentTargetConfig({
-        agent_id: agentId,
-        target_id: "gemini",
-        native_name: null,
-        tools_override: toolsOverride.length > 0 ? toolsOverride : null,
-        disallowed_tools: null,
-        model_override: null,
-        extra_frontmatter: null,
-      });
-    }
-
-    // ---- Qwen target config ----
-    {
-      const toolsOverride: string[] = [];
-
-      for (const [toolName, allowed] of Object.entries(tools)) {
-        const isAllowed = allowed === true || allowed === "true";
-        if (!isAllowed) continue;
-
-        const qwenName = QWEN_NATIVE_TOOLS[toolName];
-        if (qwenName) {
-          toolsOverride.push(qwenName);
-        } else {
-          toolsOverride.push(`${MCP_PREFIX_GEMINI}${toolName}`);
-        }
-      }
-
-      targetStore.upsertAgentTargetConfig({
-        agent_id: agentId,
-        target_id: "qwen",
-        native_name: null,
-        tools_override: toolsOverride.length > 0 ? toolsOverride : null,
-        disallowed_tools: null,
-        model_override: null,
-        extra_frontmatter: null,
-      });
-    }
-  }
 }
 
 // ---- Simple YAML frontmatter parser ----------------------------------------

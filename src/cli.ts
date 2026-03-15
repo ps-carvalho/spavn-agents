@@ -245,14 +245,7 @@ function removeAgentsAndSkills(targetDir: string): void {
   }
 }
 
-// ─── Target flag parsing ─────────────────────────────────────────────────────
-
-function parseTargetFlag(): string | null {
-  const args = process.argv.slice(3);
-  const idx = args.indexOf("--target");
-  if (idx === -1 || idx + 1 >= args.length) return null;
-  return args[idx + 1];
-}
+// ─── Flag parsing ────────────────────────────────────────────────────────────
 
 function parseScopeFlag(): "global" | "project" {
   const args = process.argv.slice(3);
@@ -263,20 +256,15 @@ function parseScopeFlag(): "global" | "project" {
 // ─── Engine-backed sync command ─────────────────────────────────────────────
 
 function sync(): void {
-  const target = parseTargetFlag();
-  if (!target) {
-    console.error("Error: --target flag is required for sync.");
-    console.error("Usage: npx spavn-agents sync --target claude|opencode|codex|gemini|qwen");
-    process.exit(1);
-  }
-
-  console.log(`\nSyncing to ${target}...\n`);
+  console.log(`\nSyncing to opencode...\n`);
 
   const engine = new SpavnEngine();
   engine.initialize();
+  // Always re-seed to pick up new targets/models added in newer versions
+  engine.seed();
 
   try {
-    const result = engine.syncTarget(target);
+    const result = engine.syncTarget("opencode");
 
     console.log(`  Agents written: ${result.agentsWritten.length}`);
     for (const id of result.agentsWritten) {
@@ -298,48 +286,7 @@ function sync(): void {
       }
     }
 
-    console.log(`\nDone! Sync complete for ${target}.\n`);
-  } finally {
-    engine.close();
-  }
-}
-
-// ─── Engine-backed install for specific targets ─────────────────────────────
-
-function installTarget(target: string): void {
-  console.log(`\nInstalling ${PLUGIN_NAME} v${VERSION} for ${target}...\n`);
-
-  const engine = new SpavnEngine();
-  const seedResult = engine.initialize();
-
-  if (seedResult) {
-    console.log(`  Database seeded: ${seedResult.agents} agents, ${seedResult.skills} skills, ${seedResult.models} models`);
-  }
-
-  try {
-    const scope = parseScopeFlag();
-    const result = engine.syncTarget(target, { scope });
-
-    console.log(`  Agents written: ${result.agentsWritten.length}`);
-    if (result.skillsWritten.length > 0) {
-      console.log(`  Skills written: ${result.skillsWritten.length}`);
-    }
-    if (result.instructionsWritten) {
-      console.log(`  Instructions file: written`);
-    }
-
-    // Record installation
-    const installPath = scope === "project" ? process.cwd() : "global";
-    engine.recordInstallation(target, scope, installPath, VERSION);
-
-    if (result.errors.length > 0) {
-      console.log(`\n  Errors:`);
-      for (const err of result.errors) {
-        console.log(`    - ${err}`);
-      }
-    }
-
-    console.log(`\nDone! ${target} target installed.\n`);
+    console.log(`\nDone! Sync complete for opencode.\n`);
   } finally {
     engine.close();
   }
@@ -348,13 +295,6 @@ function installTarget(target: string): void {
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 function install(): void {
-  // Check for --target flag: use engine-backed install
-  const target = parseTargetFlag();
-  if (target) {
-    return installTarget(target);
-  }
-
-  // Default: original opencode install behavior
   console.log(`\nInstalling ${PLUGIN_NAME} v${VERSION}...\n`);
 
   const globalDir = getGlobalDir();
@@ -933,6 +873,171 @@ async function mcp(): Promise<void> {
   }
 }
 
+// ─── Plan CLI subcommands ────────────────────────────────────────────────────
+
+function planCommand(): void {
+  const subcommand = process.argv[3];
+  const cwd = process.cwd();
+
+  switch (subcommand) {
+    case "start": {
+      const title = process.argv[4];
+      const typeIdx = process.argv.indexOf("--type");
+      const type = typeIdx !== -1 && process.argv[typeIdx + 1] ? process.argv[typeIdx + 1] : "feature";
+      if (!title) {
+        console.error("Usage: spavn-agents plan start <title> [--type feature|bugfix|refactor|...]");
+        process.exit(1);
+      }
+      const plansPath = path.join(cwd, ".spavn", "plans");
+      fs.mkdirSync(plansPath, { recursive: true });
+
+      const date = new Date().toISOString().split("T")[0];
+      const slug = title.toLowerCase().replace(/[^\w\s-]/g, "").replace(/\s+/g, "-").substring(0, 50);
+      const filename = `${date}-${type}-${slug}.md`;
+      const filepath = path.join(plansPath, filename);
+
+      const content = `---\ntitle: "${title}"\ntype: ${type}\ncreated: ${new Date().toISOString()}\nstatus: draft\n---\n\n# ${title}\n\n## Tasks\n\n- [ ] <!-- Task 1 -->\n`;
+      fs.writeFileSync(filepath, content);
+      console.log(`✓ Plan created: ${filename}`);
+      break;
+    }
+    case "list": {
+      const plansPath = path.join(cwd, ".spavn", "plans");
+      if (!fs.existsSync(plansPath)) {
+        console.log("No plans found. Run: spavn-agents plan start <title>");
+        return;
+      }
+      const files = fs.readdirSync(plansPath).filter((f) => f.endsWith(".md")).sort().reverse();
+      if (files.length === 0) {
+        console.log("No plans found.");
+        return;
+      }
+      console.log(`Plans (${files.length}):\n`);
+      for (const file of files) {
+        console.log(`  • ${file}`);
+      }
+      break;
+    }
+    default:
+      console.error("Usage: spavn-agents plan <start|list> [options]");
+      process.exit(1);
+  }
+}
+
+// ─── Coordinate CLI subcommands ──────────────────────────────────────────────
+
+function coordinateCommand(): void {
+  const subcommand = process.argv[3];
+  const cwd = process.cwd();
+
+  switch (subcommand) {
+    case "tasks": {
+      const planIdx = process.argv.indexOf("--plan");
+      const planFilename = planIdx !== -1 ? process.argv[planIdx + 1] : undefined;
+      if (!planFilename) {
+        console.error("Usage: spavn-agents coordinate tasks --plan <filename>");
+        process.exit(1);
+      }
+      // Dynamic import to avoid loading coordinate.ts at CLI startup
+      import("./tools/coordinate.js").then(({ coordinateTasks }) => {
+        console.log(coordinateTasks(cwd, planFilename));
+      });
+      break;
+    }
+    default:
+      console.error("Usage: spavn-agents coordinate <tasks> [options]");
+      process.exit(1);
+  }
+}
+
+// ─── Execute CLI subcommands ─────────────────────────────────────────────────
+
+async function executeCommand(): Promise<void> {
+  const subcommand = process.argv[3];
+  const cwd = process.cwd();
+
+  switch (subcommand) {
+    case "init": {
+      const planIdx = process.argv.indexOf("--plan");
+      const planFilename = planIdx !== -1 ? process.argv[planIdx + 1] : undefined;
+      if (!planFilename) {
+        console.error("Usage: spavn-agents execute init --plan <filename>");
+        process.exit(1);
+      }
+
+      const plansDir = path.join(cwd, ".spavn", "plans");
+      const planPath = path.resolve(plansDir, planFilename);
+      if (!fs.existsSync(planPath)) {
+        console.error(`Plan not found: ${planFilename}`);
+        process.exit(1);
+      }
+
+      const planContent = fs.readFileSync(planPath, "utf-8");
+      const { parseTasksWithAC, detectCommands, writeReplState } = await import("./utils/repl.js");
+      const parsedTasks = parseTasksWithAC(planContent);
+      if (parsedTasks.length === 0) {
+        console.error("No tasks found in plan.");
+        process.exit(1);
+      }
+
+      const detected = await detectCommands(cwd);
+      const tasks = parsedTasks.map((parsed: { description: string; acceptanceCriteria: string[] }, i: number) => ({
+        index: i,
+        description: parsed.description,
+        acceptanceCriteria: parsed.acceptanceCriteria,
+        status: "pending" as const,
+        retries: 0,
+        iterations: [],
+      }));
+
+      writeReplState(cwd, {
+        version: 1,
+        planFilename,
+        startedAt: new Date().toISOString(),
+        buildCommand: detected.buildCommand,
+        testCommand: detected.testCommand,
+        lintCommand: detected.lintCommand,
+        maxRetries: 3,
+        currentTaskIndex: -1,
+        tasks,
+      });
+
+      console.log(`✓ Execution loop initialized: ${tasks.length} tasks from ${planFilename}`);
+      break;
+    }
+    default:
+      console.error("Usage: spavn-agents execute <init> [options]");
+      process.exit(1);
+  }
+}
+
+// ─── Quality CLI subcommands ─────────────────────────────────────────────────
+
+function qualityCommand(): void {
+  const subcommand = process.argv[3];
+  const cwd = process.cwd();
+
+  switch (subcommand) {
+    case "gate": {
+      const qgPath = path.join(cwd, ".spavn", "quality-gate.json");
+      if (fs.existsSync(qgPath)) {
+        const state = JSON.parse(fs.readFileSync(qgPath, "utf-8"));
+        console.log(`Quality Gate Status:`);
+        console.log(`  Recommendation: ${state.recommendation || "pending"}`);
+        console.log(`  Scope: ${state.scope || "unknown"}`);
+        if (state.status) console.log(`  Status: ${state.status}`);
+        if (state.agents) console.log(`  Agents: ${state.agents.join(", ")}`);
+      } else {
+        console.log("No quality gate data found. Run quality gate via MCP tools first.");
+      }
+      break;
+    }
+    default:
+      console.error("Usage: spavn-agents quality <gate>");
+      process.exit(1);
+  }
+}
+
 function help(): void {
   console.log(`${PLUGIN_NAME} v${VERSION}
 
@@ -944,28 +1049,31 @@ USAGE:
 
 COMMANDS:
   install                         Install plugin, agents, and skills into OpenCode config
-  install --target <target>       Install to a specific CLI target (engine-backed)
-  sync --target <target>          Re-render agents from DB to target config dir
+  sync                            Re-render agents from DB to OpenCode config dir
   configure                       Interactive model selection (global)
   configure --project             Interactive model selection (per-project)
   configure --reset               Reset model configuration to defaults
   uninstall                       Remove plugin, agents, skills, and model config
   status                          Show installation, DB stats, and model configuration
-  mcp                             Start MCP server on stdio (for Gemini, Codex, Claude CLIs)
+  mcp                             Start MCP server on stdio
+  plan <start|list>               Plan management (start a new plan, list plans)
+  coordinate <tasks>              Coordinate task breakdown from plans
+  execute <init>                  Initialize execution loop from a plan
+  quality <gate>                  Quality gate status
   help                            Show this help message
 
 EXAMPLES:
-  npx ${PLUGIN_NAME} install                    # Install plugin (OpenCode default)
-  npx ${PLUGIN_NAME} install --target claude    # Install to Claude Code
-  npx ${PLUGIN_NAME} install --target opencode  # Install to OpenCode
-  npx ${PLUGIN_NAME} install --target codex     # Install to Codex CLI
-  npx ${PLUGIN_NAME} install --target gemini    # Install to Gemini CLI
-  npx ${PLUGIN_NAME} install --target qwen      # Install to Qwen CLI
-  npx ${PLUGIN_NAME} sync --target claude       # Re-sync agents to Claude Code
+  npx ${PLUGIN_NAME} install                    # Install plugin
+  npx ${PLUGIN_NAME} sync                       # Re-sync agents to OpenCode
   npx ${PLUGIN_NAME} configure                  # Global model selection
   npx ${PLUGIN_NAME} configure --project        # Per-project models
   npx ${PLUGIN_NAME} status                     # Check status + DB stats
   npx ${PLUGIN_NAME} mcp                        # Start MCP server (stdio)
+  npx ${PLUGIN_NAME} plan start "Add auth" --type feature
+  npx ${PLUGIN_NAME} plan list
+  npx ${PLUGIN_NAME} coordinate tasks --plan <filename>
+  npx ${PLUGIN_NAME} execute init --plan <filename>
+  npx ${PLUGIN_NAME} quality gate
 
 AGENTS:
   Primary (architect, implement, fix):
@@ -976,24 +1084,23 @@ AGENTS:
     security, etc.) and executes them with access-level constraints.
     Supports multi-skill loading for framework-aware development.
 
-TOOLS (29):
-  spavn_init, spavn_status      .spavn directory management
-  spavn_configure                Per-project model configuration
-  worktree_create, worktree_list  Git worktree management
-  worktree_remove, worktree_open
-  branch_create, branch_status    Git branch operations
-  branch_switch
-  plan_save, plan_list            Plan persistence
-  plan_load, plan_delete
-  session_save, session_list      Session management
-  session_load
-  docs_init, docs_save            Mermaid documentation
-  docs_list, docs_index
-  task_finalize                   Commit, push, and create PR
-  github_status, github_issues    GitHub issue and project browsing
-  github_projects
-  repl_init, repl_status          Iterative task-by-task implementation loop
-  repl_report, repl_summary
+MCP TOOLS (54):
+  spavn_init, spavn_status, spavn_configure
+  worktree_create, worktree_list, worktree_remove, worktree_open
+  branch_create, branch_status, branch_switch
+  plan_save, plan_list, plan_load, plan_delete, plan_commit
+  plan_start, plan_interview, plan_approve
+  session_save, session_list, session_load
+  docs_init, docs_save, docs_list, docs_index
+  task_finalize
+  github_status, github_issues, github_projects
+  repl_init, repl_status, repl_report, repl_resume, repl_summary
+  quality_gate_summary, quality_report, quality_finalize
+  coordinate_tasks, coordinate_assign_skills, coordinate_status
+  agent_list, agent_get, skill, skill_get, skill_list
+  git_commit, git_pr, git_status
+  execute_init, execute_task, execute_report, execute_resume, execute_summary
+  quality_gate (alias)
 
 SKILLS (44):
   Knowledge (35):
@@ -1041,6 +1148,22 @@ switch (command) {
       console.error("MCP server failed:", err.message);
       process.exit(1);
     });
+    break;
+
+  case "plan":
+    planCommand();
+    break;
+  case "coordinate":
+    coordinateCommand();
+    break;
+  case "execute":
+    executeCommand().catch((err) => {
+      console.error("Execute failed:", err.message);
+      process.exit(1);
+    });
+    break;
+  case "quality":
+    qualityCommand();
     break;
 
   case "help":

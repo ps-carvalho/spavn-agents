@@ -16,11 +16,7 @@ import { TargetStore } from "./targets.js";
 import { getRenderer } from "./renderers/index.js";
 
 // Side-effect imports: register renderers
-import "./renderers/claude.js";
 import "./renderers/opencode.js";
-import "./renderers/codex.js";
-import "./renderers/gemini.js";
-import "./renderers/qwen.js";
 
 import type {
   Agent,

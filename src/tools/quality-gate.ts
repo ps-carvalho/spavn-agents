@@ -119,8 +119,9 @@ export const qualityGateSummary = tool({
       return `\u2717 No sub-agent reports provided. Pass at least one agent report to aggregate.`;
     }
 
-    // Collect all findings and sort by severity
-    const allFindings = reports.flatMap((r) => r.findings);
+    // Collect all findings, deduplicate, and sort by severity
+    const rawFindings = reports.flatMap((r) => r.findings);
+    const allFindings = deduplicateFindings(rawFindings);
     allFindings.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 99) - (SEVERITY_ORDER[b.severity] ?? 99));
 
     // Determine recommendation
@@ -287,6 +288,22 @@ function formatCounts(counts: Record<string, number>): string {
 
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/**
+ * Deduplicate findings by file+line+message hash.
+ * When multiple agents flag the same issue, keep the highest severity.
+ */
+function deduplicateFindings(findings: Finding[]): Finding[] {
+  const seen = new Map<string, Finding>();
+  for (const f of findings) {
+    const key = `${f.location ?? ""}::${f.title}`;
+    const existing = seen.get(key);
+    if (!existing || (SEVERITY_ORDER[f.severity] ?? 99) < (SEVERITY_ORDER[existing.severity] ?? 99)) {
+      seen.set(key, f);
+    }
+  }
+  return Array.from(seen.values());
 }
 
 function persistState(cwd: string, state: QualityGateState): void {
