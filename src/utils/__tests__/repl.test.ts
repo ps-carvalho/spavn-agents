@@ -3,7 +3,6 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import {
-  parseTasksFromPlan,
   parseTasksWithAC,
   detectCommands,
   readReplState,
@@ -45,9 +44,9 @@ function makeState(overrides: Partial<ReplState> = {}): ReplState {
   };
 }
 
-// ─── parseTasksFromPlan ──────────────────────────────────────────────────────
+// ─── parseTasksWithAC (description extraction) ──────────────────────────────
 
-describe("parseTasksFromPlan", () => {
+describe("parseTasksWithAC (description extraction)", () => {
   it("extracts tasks from ## Tasks section", () => {
     const content = `# My Plan
 
@@ -63,8 +62,8 @@ Some summary here.
 ## Notes
 Some notes.
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual([
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual([
       "Create the utility module",
       "Write tests for the module",
       "Update documentation",
@@ -78,8 +77,8 @@ Some notes.
 - [ ] Task 2: Create src/tools/repl.ts
 - [ ] Task 3: Register tools
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual([
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual([
       "Create src/utils/repl.ts",
       "Create src/tools/repl.ts",
       "Register tools",
@@ -92,8 +91,8 @@ Some notes.
 - [ ] Implement feature A
 - [ ] Fix bug B
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Implement feature A", "Fix bug B"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Implement feature A", "Fix bug B"]);
   });
 
   it("returns empty array for plan with no tasks", () => {
@@ -102,7 +101,7 @@ Some notes.
 ## Summary
 Just a summary, no tasks.
 `;
-    expect(parseTasksFromPlan(content)).toEqual([]);
+    expect(parseTasksWithAC(content)).toEqual([]);
   });
 
   it("ignores checked tasks (- [x])", () => {
@@ -112,8 +111,8 @@ Just a summary, no tasks.
 - [ ] Still pending
 - [x] Also done
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Still pending"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Still pending"]);
   });
 
   it("falls back to any checkboxes when no ## Tasks section", () => {
@@ -124,8 +123,8 @@ Some intro.
 - [ ] First thing
 - [ ] Second thing
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["First thing", "Second thing"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["First thing", "Second thing"]);
   });
 
   it("handles asterisk list markers", () => {
@@ -134,8 +133,8 @@ Some intro.
 * [ ] Task with asterisk
 - [ ] Task with dash
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Task with asterisk", "Task with dash"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Task with asterisk", "Task with dash"]);
   });
 
   it("handles case-insensitive Task prefix", () => {
@@ -143,8 +142,8 @@ Some intro.
 
 - [ ] task 1: lowercase prefix
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["lowercase prefix"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["lowercase prefix"]);
   });
 });
 
@@ -641,15 +640,15 @@ describe("formatSummary", () => {
   });
 });
 
-// ─── Additional parseTasksFromPlan edge cases ────────────────────────────────
+// ─── Additional parseTasksWithAC edge cases (description extraction) ─────────
 
-describe("parseTasksFromPlan edge cases", () => {
+describe("parseTasksWithAC edge cases (description extraction)", () => {
   it("returns empty array for empty string", () => {
-    expect(parseTasksFromPlan("")).toEqual([]);
+    expect(parseTasksWithAC("")).toEqual([]);
   });
 
   it("returns empty array for whitespace-only content", () => {
-    expect(parseTasksFromPlan("   \n\n  \n")).toEqual([]);
+    expect(parseTasksWithAC("   \n\n  \n")).toEqual([]);
   });
 
   it("ignores indented checkboxes (not top-level list items)", () => {
@@ -658,9 +657,9 @@ describe("parseTasksFromPlan edge cases", () => {
 - [ ] Top level task
   - [ ] Nested subtask
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     // The regex requires ^[-*] so indented items won't match
-    expect(tasks).toEqual(["Top level task"]);
+    expect(tasks.map((t) => t.description)).toEqual(["Top level task"]);
   });
 
   it("handles multiple ## Tasks sections (uses first one)", () => {
@@ -676,9 +675,9 @@ Some content.
 
 - [ ] Second section task
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     // extractTasksSection stops at the next ## heading
-    expect(tasks).toEqual(["First section task"]);
+    expect(tasks.map((t) => t.description)).toEqual(["First section task"]);
   });
 
   it("handles task descriptions with special characters", () => {
@@ -688,11 +687,11 @@ Some content.
 - [ ] Fix bug #123 (critical)
 - [ ] Add "quoted" strings support
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     expect(tasks).toHaveLength(3);
-    expect(tasks[0]).toContain("`src/utils/repl.ts`");
-    expect(tasks[1]).toContain("#123");
-    expect(tasks[2]).toContain('"quoted"');
+    expect(tasks[0].description).toContain("`src/utils/repl.ts`");
+    expect(tasks[1].description).toContain("#123");
+    expect(tasks[2].description).toContain('"quoted"');
   });
 
   it("strips 'Task' prefix case-insensitively with varying spacing", () => {
@@ -701,8 +700,8 @@ Some content.
 - [ ] TASK 1:  Extra spaces
 - [ ] task 99: High number
 `;
-    const tasks = parseTasksFromPlan(content);
-    expect(tasks).toEqual(["Extra spaces", "High number"]);
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual(["Extra spaces", "High number"]);
   });
 
   it("does not strip partial 'Task' prefix matches", () => {
@@ -710,9 +709,9 @@ Some content.
 
 - [ ] Tasking the team with reviews
 `;
-    const tasks = parseTasksFromPlan(content);
+    const tasks = parseTasksWithAC(content);
     // "Tasking" should NOT be stripped since it doesn't match "Task N:"
-    expect(tasks).toEqual(["Tasking the team with reviews"]);
+    expect(tasks.map((t) => t.description)).toEqual(["Tasking the team with reviews"]);
   });
 });
 
@@ -1020,16 +1019,15 @@ describe("parseTasksWithAC", () => {
     expect(tasks[0].acceptanceCriteria).toEqual(["Asterisk criterion"]);
   });
 
-  it("is backward-compatible with parseTasksFromPlan", () => {
+  it("returns descriptions alongside acceptance criteria", () => {
     const content = `## Tasks
 
 - [ ] Task 1: Description
   - AC: Some criterion
 - [ ] Task 2: Another
 `;
-    const descriptions = parseTasksFromPlan(content);
     const withAC = parseTasksWithAC(content);
-    expect(descriptions).toEqual(withAC.map((t) => t.description));
+    expect(withAC.map((t) => t.description)).toEqual(["Description", "Another"]);
   });
 });
 
@@ -1163,14 +1161,14 @@ describe("parseTasksWithAC dependency parsing", () => {
     expect(tasks[1].dependsOn).toEqual([]);
   });
 
-  it("parseTasksFromPlan still returns descriptions without dep markers", () => {
+  it("descriptions do not contain dep markers", () => {
     const content = `## Tasks
 
 - [ ] Task 1: Create module
 - [ ] Task 2: Write tests (depends: 1)
 `;
-    const descriptions = parseTasksFromPlan(content);
-    expect(descriptions).toEqual([
+    const tasks = parseTasksWithAC(content);
+    expect(tasks.map((t) => t.description)).toEqual([
       "Create module",
       "Write tests",
     ]);

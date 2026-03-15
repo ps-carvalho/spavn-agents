@@ -3,17 +3,8 @@
 // ---------------------------------------------------------------------------
 
 import { tool } from "@opencode-ai/plugin";
-import { SpavnEngine } from "../engine/index.js";
-
-let _engine: SpavnEngine | null = null;
-
-function getEngine(): SpavnEngine {
-  if (!_engine) {
-    _engine = new SpavnEngine();
-    _engine.initialize();
-  }
-  return _engine;
-}
+import * as skillHandlers from "./handlers/skill.js";
+import * as agentHandlers from "./handlers/agent.js";
 
 export const getSkill = tool({
   description:
@@ -24,16 +15,8 @@ export const getSkill = tool({
       .describe('The skill identifier, e.g. "security-hardening", "api-design"'),
   },
   async execute(args) {
-    const engine = getEngine();
-    const content = engine.getSkillContent(args.skillId);
-
-    if (!content) {
-      const skills = engine.listSkills();
-      const available = skills.map((s) => s.id).join(", ");
-      return `✗ Skill not found: ${args.skillId}\n\nAvailable skills: ${available}`;
-    }
-
-    return content;
+    const result = await skillHandlers.executeGet({ skillId: args.skillId });
+    return result.text;
   },
 });
 
@@ -47,22 +30,7 @@ export const listAgents = tool({
       .describe("Filter by agent mode"),
   },
   async execute(args) {
-    const engine = getEngine();
-    const filter = args.mode ? { mode: args.mode } : undefined;
-    const agents = engine.listAgents(filter);
-
-    if (agents.length === 0) {
-      return "✗ No agents found in the database. Run 'npx spavn-agents install' first.";
-    }
-
-    const lines = agents.map((a) => {
-      const tools = engine.getAgentTools(a.id);
-      const enabledTools = tools
-        .filter((t) => t.allowed)
-        .map((t) => t.tool_name);
-      return `- **${a.id}** (${a.mode}) — ${a.description}\n  Tools: ${enabledTools.join(", ") || "none"}`;
-    });
-
-    return `✓ ${agents.length} agents:\n\n${lines.join("\n\n")}`;
+    const result = await agentHandlers.executeList({ mode: args.mode });
+    return result.text;
   },
 });

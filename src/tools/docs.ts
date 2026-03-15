@@ -1,24 +1,14 @@
 import { tool } from "@opencode-ai/plugin";
 import * as fs from "fs";
 import * as path from "path";
+import { slugify, getDatePrefix } from "../utils/strings.js";
+import { DOCS_DIR } from "../utils/constants.js";
+import { parseFrontmatter as parseRawFrontmatter, readFrontmatterOnly, type FrontmatterFields } from "../utils/frontmatter.js";
+import * as docsHandlers from "./handlers/docs.js";
 
-const DOCS_DIR = "docs";
 const DOC_TYPES = ["decisions", "features", "flows"] as const;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .substring(0, 60);
-}
-
-function getDatePrefix(): string {
-  return new Date().toISOString().split("T")[0]; // YYYY-MM-DD
-}
 
 /** Map singular type to plural folder name */
 function typeToFolder(type: string): string {
@@ -47,32 +37,30 @@ interface DocFrontmatter {
   related_files?: string[];
 }
 
-function parseFrontmatter(content: string): DocFrontmatter | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
-
-  const fm = match[1];
-  const get = (key: string) => {
-    const m = fm.match(new RegExp(`${key}:\\s*"?([^"\\n]+)"?`));
-    return m ? m[1].trim() : undefined;
+/** Convert raw FrontmatterFields to typed DocFrontmatter. */
+function fieldsToDocFrontmatter(fields: FrontmatterFields): DocFrontmatter {
+  const str = (key: string) => {
+    const v = fields[key];
+    return typeof v === "string" ? v : Array.isArray(v) ? v.join(", ") : undefined;
   };
-  const getArray = (key: string): string[] => {
-    const m = fm.match(new RegExp(`${key}:\\s*\\[([^\\]]*)]`));
-    if (!m) return [];
-    return m[1]
-      .split(",")
-      .map((s) => s.trim().replace(/^"|"$/g, ""))
-      .filter(Boolean);
+  const arr = (key: string) => {
+    const v = fields[key];
+    return Array.isArray(v) ? v : undefined;
   };
-
   return {
-    title: get("title") || "Untitled",
-    type: get("type") || "unknown",
-    date: get("date") || "",
-    status: get("status"),
-    tags: getArray("tags"),
-    related_files: getArray("related_files"),
+    title: str("title") || "Untitled",
+    type: str("type") || "unknown",
+    date: str("date") || "",
+    status: str("status"),
+    tags: arr("tags"),
+    related_files: arr("related_files"),
   };
+}
+
+function parseDocFrontmatter(content: string): DocFrontmatter | null {
+  const fields = parseRawFrontmatter(content);
+  if (!fields) return null;
+  return fieldsToDocFrontmatter(fields);
 }
 
 // ─── Templates ───────────────────────────────────────────────────────────────
@@ -162,9 +150,9 @@ function rebuildIndex(docsRoot: string): string {
       .reverse();
 
     for (const file of files) {
-      const content = fs.readFileSync(path.join(folderPath, file), "utf-8");
-      const fm = parseFrontmatter(content);
-      if (fm) {
+      const fields = readFrontmatterOnly(path.join(folderPath, file), 1024);
+      if (fields) {
+        const fm = fieldsToDocFrontmatter(fields);
         section.entries.push({ ...fm, filename: file, folder: section.type });
       }
     }
@@ -229,7 +217,7 @@ export const init = tool({
     const docsPath = args.path || DOCS_DIR;
     const docsRoot = path.join(context.worktree, docsPath);
 
-    // Check if docs/ already exists
+    // Check if docs/ already exists — the handler doesn't support confirm logic
     if (fs.existsSync(docsRoot)) {
       if (!args.confirm) {
         // Check what's already there
@@ -309,7 +297,7 @@ export const save = tool({
     }
 
     const datePrefix = getDatePrefix();
-    const slug = slugify(title);
+    const slug = slugify(title, 60);
     const filename = `${datePrefix}-${slug}.md`;
     const filepath = path.join(folderPath, filename);
 
@@ -380,8 +368,8 @@ Run docs_init to set up the documentation folder structure.`;
       output += `\n${icon} ${folder.charAt(0).toUpperCase() + folder.slice(1)} (${files.length}):\n\n`;
 
       for (const file of files) {
-        const content = fs.readFileSync(path.join(folderPath, file), "utf-8");
-        const fm = parseFrontmatter(content);
+        const fields = readFrontmatterOnly(path.join(folderPath, file), 1024);
+        const fm = fields ? fieldsToDocFrontmatter(fields) : null;
 
         const title = fm?.title || file;
         const date = fm?.date ? fm.date.split("T")[0] : file.substring(0, 10);
@@ -413,12 +401,7 @@ export const index = tool({
     "Rebuild docs/INDEX.md with links to all documentation files. Called automatically by docs_save.",
   args: {},
   async execute(_args, context) {
-    const docsRoot = path.join(context.worktree, DOCS_DIR);
-
-    if (!fs.existsSync(docsRoot)) {
-      return `No docs/ directory found. Run docs_init first.`;
-    }
-
-    return rebuildIndex(docsRoot);
+    const result = docsHandlers.executeIndex(context.worktree);
+    return result.text;
   },
 });

@@ -12,9 +12,9 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+import { SPAVN_DIR } from "./constants.js";
 
-const SPAVN_DIR = ".spavn";
+// ─── Constants ───────────────────────────────────────────────────────────────
 const REPL_STATE_FILE = "repl-state.json";
 const REPL_STATE_VERSION = 2;
 
@@ -126,10 +126,6 @@ export interface ParsedTask {
  * Strips the `Task N:` prefix if present to get a clean description.
  * Extracts `- AC:` lines immediately following each task as acceptance criteria.
  */
-export function parseTasksFromPlan(planContent: string): string[] {
-  return parseTasksWithAC(planContent).map((t) => t.description);
-}
-
 /**
  * Parse plan tasks with their acceptance criteria.
  *
@@ -224,7 +220,7 @@ function extractTasksSection(content: string): string | null {
  * Detect the package manager from lockfiles.
  * Priority: bun > pnpm > yarn > npm (fallback)
  */
-export function detectPackageManager(cwd: string): "bun" | "pnpm" | "yarn" | "npm" {
+function detectPackageManager(cwd: string): "bun" | "pnpm" | "yarn" | "npm" {
   if (
     fs.existsSync(path.join(cwd, "bun.lockb")) ||
     fs.existsSync(path.join(cwd, "bun.lock"))
@@ -262,66 +258,66 @@ export async function detectCommands(cwd: string): Promise<CommandDetection> {
 
   // 1. Check package.json (most common for this project type)
   const pkgPath = path.join(cwd, "package.json");
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      const scripts = pkg.scripts || {};
-      const devDeps = pkg.devDependencies || {};
-      const deps = pkg.dependencies || {};
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    const scripts = pkg.scripts || {};
+    const devDeps = pkg.devDependencies || {};
+    const deps = pkg.dependencies || {};
 
-      // Detect package manager from lockfiles
-      const pm = detectPackageManager(cwd);
+    // Detect package manager from lockfiles
+    const pm = detectPackageManager(cwd);
 
-      // Build command
-      if (scripts.build) {
-        result.buildCommand = pm === "yarn" ? "yarn build" : `${pm} run build`;
-      }
+    // Build command
+    if (scripts.build) {
+      result.buildCommand = pm === "yarn" ? "yarn build" : `${pm} run build`;
+    }
 
-      // Test command — prefer specific runner detection
-      if (devDeps.vitest || deps.vitest) {
-        result.testCommand = pm === "bun" ? "bun vitest run" : "npx vitest run";
-        result.framework = "vitest";
-      } else if (devDeps.jest || deps.jest) {
-        result.testCommand = pm === "bun" ? "bun jest" : "npx jest";
-        result.framework = "jest";
-      } else if (devDeps.mocha || deps.mocha) {
-        result.testCommand = pm === "bun" ? "bun mocha" : "npx mocha";
-        result.framework = "mocha";
-      } else if (scripts.test && scripts.test !== 'echo "Error: no test specified" && exit 1') {
-        result.testCommand = pm === "yarn" ? "yarn test" : `${pm} test`;
-        result.framework = "npm-test";
-      }
+    // Test command — prefer specific runner detection
+    if (devDeps.vitest || deps.vitest) {
+      result.testCommand = pm === "bun" ? "bun vitest run" : "npx vitest run";
+      result.framework = "vitest";
+    } else if (devDeps.jest || deps.jest) {
+      result.testCommand = pm === "bun" ? "bun jest" : "npx jest";
+      result.framework = "jest";
+    } else if (devDeps.mocha || deps.mocha) {
+      result.testCommand = pm === "bun" ? "bun mocha" : "npx mocha";
+      result.framework = "mocha";
+    } else if (scripts.test && scripts.test !== 'echo "Error: no test specified" && exit 1') {
+      result.testCommand = pm === "yarn" ? "yarn test" : `${pm} test`;
+      result.framework = "npm-test";
+    }
 
-      // Lint command
-      if (scripts.lint) {
-        result.lintCommand = pm === "yarn" ? "yarn lint" : `${pm} run lint`;
-      }
+    // Lint command
+    if (scripts.lint) {
+      result.lintCommand = pm === "yarn" ? "yarn lint" : `${pm} run lint`;
+    }
 
-      result.detected = !!(result.buildCommand || result.testCommand);
-      if (result.detected) return result;
-    } catch {
+    result.detected = !!(result.buildCommand || result.testCommand);
+    if (result.detected) return result;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       // Malformed package.json — continue to next detector
     }
   }
 
   // 2. Check Makefile
   const makefilePath = path.join(cwd, "Makefile");
-  if (fs.existsSync(makefilePath)) {
-    try {
-      const makefile = fs.readFileSync(makefilePath, "utf-8");
-      if (/^build\s*:/m.test(makefile)) {
-        result.buildCommand = "make build";
-      }
-      if (/^test\s*:/m.test(makefile)) {
-        result.testCommand = "make test";
-        result.framework = "make";
-      }
-      if (/^lint\s*:/m.test(makefile)) {
-        result.lintCommand = "make lint";
-      }
-      result.detected = !!(result.buildCommand || result.testCommand);
-      if (result.detected) return result;
-    } catch {
+  try {
+    const makefile = fs.readFileSync(makefilePath, "utf-8");
+    if (/^build\s*:/m.test(makefile)) {
+      result.buildCommand = "make build";
+    }
+    if (/^test\s*:/m.test(makefile)) {
+      result.testCommand = "make test";
+      result.framework = "make";
+    }
+    if (/^lint\s*:/m.test(makefile)) {
+      result.lintCommand = "make lint";
+    }
+    result.detected = !!(result.buildCommand || result.testCommand);
+    if (result.detected) return result;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       // Continue to next detector
     }
   }
@@ -346,19 +342,19 @@ export async function detectCommands(cwd: string): Promise<CommandDetection> {
 
   // 5. Check pyproject.toml or setup.py (Python)
   const pyprojectPath = path.join(cwd, "pyproject.toml");
-  if (fs.existsSync(pyprojectPath)) {
-    try {
-      const pyproject = fs.readFileSync(pyprojectPath, "utf-8");
-      if (pyproject.includes("pytest")) {
-        result.testCommand = "pytest";
-        result.framework = "pytest";
-      } else {
-        result.testCommand = "python -m pytest";
-        result.framework = "pytest";
-      }
-      result.detected = true;
-      return result;
-    } catch {
+  try {
+    const pyproject = fs.readFileSync(pyprojectPath, "utf-8");
+    if (pyproject.includes("pytest")) {
+      result.testCommand = "pytest";
+      result.framework = "pytest";
+    } else {
+      result.testCommand = "python -m pytest";
+      result.framework = "pytest";
+    }
+    result.detected = true;
+    return result;
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
       // Continue
     }
   }
@@ -391,8 +387,6 @@ const CONFIG_FILE = "config.json";
  */
 export function readSpavnConfig(cwd: string): SpavnConfig {
   const configPath = path.join(cwd, SPAVN_DIR, CONFIG_FILE);
-  if (!fs.existsSync(configPath)) return {};
-
   try {
     const raw = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     if (typeof raw !== "object" || raw === null) return {};
@@ -421,8 +415,6 @@ function statePath(cwd: string): string {
  */
 export function readReplState(cwd: string): ReplState | null {
   const filepath = statePath(cwd);
-  if (!fs.existsSync(filepath)) return null;
-
   try {
     const raw = JSON.parse(fs.readFileSync(filepath, "utf-8"));
 

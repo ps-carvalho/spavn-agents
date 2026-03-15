@@ -1,8 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
-
-const SPAVN_DIR = ".spavn";
-const PLANS_DIR = "plans";
+import { SPAVN_DIR, PLANS_DIR } from "./constants.js";
+import { parseFrontmatter as parseRawFrontmatter } from "./frontmatter.js";
 
 /**
  * Map plan types to git branch prefixes.
@@ -17,21 +16,17 @@ export const TYPE_TO_PREFIX: Record<string, string> = {
 };
 
 /**
- * Parse YAML frontmatter from plan content.
+ * Parse YAML frontmatter from plan content, coercing all values to strings.
  * Returns a map of key-value pairs, or null if no frontmatter found.
  */
 export function parseFrontmatter(content: string): Record<string, string> | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
-
-  const fm: Record<string, string> = {};
-  for (const line of match[1].split("\n")) {
-    const kv = line.match(/^(\w+):\s*"?([^"\n]*)"?\s*$/);
-    if (kv) {
-      fm[kv[1]] = kv[2].trim();
-    }
+  const fields = parseRawFrontmatter(content);
+  if (!fields) return null;
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    result[k] = Array.isArray(v) ? v.join(", ") : v;
   }
-  return fm;
+  return result;
 }
 
 /**

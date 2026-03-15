@@ -3,7 +3,6 @@ import {
   MODEL_REGISTRY,
   PRIMARY_AGENTS,
   SUBAGENTS,
-  ENHANCED_SKILLS,
   ALL_AGENTS,
   DISABLED_BUILTIN_AGENTS,
   STALE_AGENT_FILES,
@@ -38,19 +37,6 @@ describe("Agent Constants", () => {
 
     it("is a readonly tuple", () => {
       expect(Array.isArray(SUBAGENTS)).toBe(true);
-    });
-  });
-
-  describe("ENHANCED_SKILLS", () => {
-    it("contains the 9 former subagent names as enhanced skills", () => {
-      expect(ENHANCED_SKILLS).toEqual([
-        "audit", "coder", "debug", "devops", "docs-writer",
-        "perf", "refactor", "security", "testing",
-      ]);
-    });
-
-    it("has 9 enhanced skills", () => {
-      expect(ENHANCED_SKILLS).toHaveLength(9);
     });
   });
 

@@ -40,7 +40,6 @@ vi.mock("../utils/plan-extract.js", () => ({
   parseFrontmatter: vi.fn().mockReturnValue(null),
   upsertFrontmatterField: vi.fn().mockImplementation((content: string) => content),
   TYPE_TO_PREFIX: { feature: "feature", bugfix: "fix", refactor: "refactor" },
-  extractBranch: vi.fn().mockReturnValue(null),
   extractIssueRefs: vi.fn().mockReturnValue([]),
   extractPlanSections: vi.fn().mockReturnValue({}),
   buildPrBodyFromPlan: vi.fn().mockReturnValue(""),

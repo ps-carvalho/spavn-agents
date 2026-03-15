@@ -10,10 +10,7 @@ import {
 } from "../utils/plan-extract.js";
 import { git, gh } from "../utils/shell.js";
 import { checkGhAvailability } from "../utils/github.js";
-
-const SPAVN_DIR = ".spavn";
-const PROTECTED_BRANCHES = ["main", "master", "develop", "production", "staging"];
-const DOCS_DIR = "docs";
+import { SPAVN_DIR, PROTECTED_BRANCHES, DOCS_DIR } from "../utils/constants.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -145,7 +142,7 @@ export const finalize = tool({
       return "✗ Error: Could not determine current branch.";
     }
 
-    if (PROTECTED_BRANCHES.includes(branchName)) {
+    if ((PROTECTED_BRANCHES as readonly string[]).includes(branchName)) {
       return `✗ Error: Cannot finalize on protected branch '${branchName}'.
 Create a feature/bugfix branch first with branch_create or worktree_create.`;
     }

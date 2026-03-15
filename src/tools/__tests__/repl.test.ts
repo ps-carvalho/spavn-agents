@@ -45,7 +45,6 @@ vi.mock("fs", async () => {
 // ─── Mock utils/repl.js ──────────────────────────────────────────────────────
 
 vi.mock("../../utils/repl.js", () => ({
-  parseTasksFromPlan: vi.fn(),
   parseTasksWithAC: vi.fn(),
   detectCommands: vi.fn(),
   readSpavnConfig: vi.fn().mockReturnValue({}),
@@ -64,7 +63,6 @@ vi.mock("../../utils/repl.js", () => ({
 // Import after mocks
 const fs = await import("fs");
 const {
-  parseTasksFromPlan,
   parseTasksWithAC,
   detectCommands,
   readSpavnConfig,
@@ -81,7 +79,6 @@ const {
 } = await import("../../utils/repl.js");
 const replTools = await import("../repl.js");
 
-const mockParseTasksFromPlan = vi.mocked(parseTasksFromPlan);
 const mockParseTasksWithAC = vi.mocked(parseTasksWithAC);
 const mockDetectCommands = vi.mocked(detectCommands);
 const mockReadReplState = vi.mocked(readReplState);

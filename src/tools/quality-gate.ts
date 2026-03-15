@@ -3,14 +3,17 @@
  *
  * Aggregates sub-agent findings into a unified report with severity sorting,
  * go/no-go recommendation, and PR body content.
+ *
+ * The OpenCode plugin version has richer parsing (per-finding extraction,
+ * deduplication, PR body section) than the simplified handler. We keep the
+ * full logic here and delegate only the state persistence to the handler.
  */
 
 import { tool } from "@opencode-ai/plugin";
 import * as fs from "fs";
 import * as path from "path";
 import { classifyChangeScope } from "../utils/change-scope.js";
-
-const SPAVN_DIR = ".spavn";
+import { SPAVN_DIR } from "../utils/constants.js";
 const QUALITY_GATE_FILE = "quality-gate.json";
 
 // ─── Types ───────────────────────────────────────────────────────────────────

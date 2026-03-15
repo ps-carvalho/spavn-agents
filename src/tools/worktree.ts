@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { git } from "../utils/shell.js";
 import { detectWorktreeInfo, deduplicateBranch } from "../utils/worktree-detect.js";
+import * as worktreeHandlers from "./handlers/worktree.js";
 
 const WORKTREE_ROOT = ".worktrees";
 
@@ -13,6 +14,10 @@ type Client = PluginInput["client"];
 /**
  * Factory function that creates the worktree_create tool with access
  * to the OpenCode client for toast notifications.
+ *
+ * The OpenCode plugin version has richer logic (deduplication, fromBranch
+ * fallback chains) than the simplified handler. We keep the full logic here
+ * and use the handler for the core worktree creation.
  */
 export function createCreate(client: Client) {
   return tool({
@@ -164,34 +169,8 @@ export const list = tool({
   description: "List all git worktrees for this project",
   args: {},
   async execute(args, context) {
-    try {
-      const { stdout } = await git(context.worktree, "worktree", "list");
-
-      if (!stdout.trim()) {
-        return "No worktrees found.";
-      }
-
-      const lines = stdout.trim().split("\n");
-      let output = "Git Worktrees:\n\n";
-
-      for (const line of lines) {
-        const parts = line.split(/\s+/);
-        const worktreePath = parts[0];
-        const commit = parts[1];
-        const branch = parts[2]?.replace(/[\[\]]/g, "") || "detached";
-
-        const isMain = worktreePath === context.worktree;
-        const marker = isMain ? " (main)" : "";
-
-        output += `\u2022 ${branch}${marker}\n`;
-        output += `  Path: ${worktreePath}\n`;
-        output += `  Commit: ${commit}\n\n`;
-      }
-
-      return output.trim();
-    } catch (error: any) {
-      return `\u2717 Error listing worktrees: ${error.message || error}`;
-    }
+    const result = await worktreeHandlers.executeList(context.worktree);
+    return result.text;
   },
 });
 
