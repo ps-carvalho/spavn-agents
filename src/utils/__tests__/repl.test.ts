@@ -27,7 +27,7 @@ function makeTmpDir(): string {
 
 function makeState(overrides: Partial<ReplState> = {}): ReplState {
   return {
-    version: 2,
+    version: 3,
     planFilename: "test-plan.md",
     startedAt: "2026-01-01T00:00:00Z",
     buildCommand: "npm run build",
@@ -40,6 +40,10 @@ function makeState(overrides: Partial<ReplState> = {}): ReplState {
       { index: 1, description: "Task B", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [] },
       { index: 2, description: "Task C", acceptanceCriteria: [], status: "pending", retries: 0, iterations: [] },
     ],
+    buildPhase: "developing",
+    skipBuild: false,
+    buildCount: 0,
+    pendingVerification: false,
     ...overrides,
   };
 }
@@ -1428,7 +1432,7 @@ describe("v1 to v2 migration", () => {
     fs.rmSync(tmpDir, { recursive: true });
   });
 
-  it("migrates v1 state to v2 with empty dependsOn arrays", () => {
+  it("migrates v1 state to v3 with empty dependsOn arrays", () => {
     const v1State = {
       version: 1,
       planFilename: "plan.md",
@@ -1451,12 +1455,17 @@ describe("v1 to v2 migration", () => {
 
     const state = readReplState(tmpDir);
     expect(state).not.toBeNull();
-    expect(state!.version).toBe(2);
+    expect(state!.version).toBe(3);
     expect(state!.tasks[0].dependsOn).toEqual([]);
     expect(state!.tasks[1].dependsOn).toEqual([]);
+    // Should have new build phase fields
+    expect(state!.buildPhase).toBe("developing");
+    expect(state!.skipBuild).toBe(false);
+    expect(state!.buildCount).toBe(0);
+    expect(state!.pendingVerification).toBe(false);
   });
 
-  it("preserves existing dependsOn during v1→v2 migration", () => {
+  it("preserves existing dependsOn during v1→v3 migration", () => {
     // A v1 state that somehow already has dependsOn on some tasks
     const v1State = {
       version: 1,
@@ -1480,14 +1489,19 @@ describe("v1 to v2 migration", () => {
 
     const state = readReplState(tmpDir);
     expect(state).not.toBeNull();
-    expect(state!.version).toBe(2);
+    expect(state!.version).toBe(3);
     // Existing dependsOn should be preserved
     expect(state!.tasks[0].dependsOn).toEqual([1]);
     // Missing dependsOn should be backfilled
     expect(state!.tasks[1].dependsOn).toEqual([]);
+    // Should have new build phase fields
+    expect(state!.buildPhase).toBe("developing");
+    expect(state!.skipBuild).toBe(false);
+    expect(state!.buildCount).toBe(0);
+    expect(state!.pendingVerification).toBe(false);
   });
 
-  it("migrates v0 (no version) through v1 to v2", () => {
+  it("migrates v0 (no version) through v1 to v3", () => {
     const v0State = {
       // no version field
       planFilename: "plan.md",
@@ -1509,8 +1523,13 @@ describe("v1 to v2 migration", () => {
 
     const state = readReplState(tmpDir);
     expect(state).not.toBeNull();
-    expect(state!.version).toBe(2);
+    expect(state!.version).toBe(3);
     expect(state!.tasks[0].dependsOn).toEqual([]);
     expect(state!.tasks[0].acceptanceCriteria).toEqual([]);
+    // Should have new build phase fields
+    expect(state!.buildPhase).toBe("developing");
+    expect(state!.skipBuild).toBe(false);
+    expect(state!.buildCount).toBe(0);
+    expect(state!.pendingVerification).toBe(false);
   });
 });

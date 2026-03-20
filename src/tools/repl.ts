@@ -34,6 +34,10 @@ export const init = tool({
       .number()
       .optional()
       .describe("Max retries per failing task before escalating to user (default: 3)"),
+    skipBuild: tool.schema
+      .boolean()
+      .optional()
+      .describe("Skip build verification during task loop — defer to quality gate (default: false)"),
   },
   async execute(args, context) {
     const result = await replHandlers.executeInit(context.worktree, {
@@ -41,6 +45,7 @@ export const init = tool({
       buildCommand: args.buildCommand,
       testCommand: args.testCommand,
       maxRetries: args.maxRetries,
+      skipBuild: args.skipBuild,
     });
     return result.text;
   },
@@ -65,14 +70,14 @@ export const status = tool({
 export const report = tool({
   description:
     "Report the outcome of the current task iteration. " +
-    "After implementing a task and running build/tests, report whether it passed, " +
+    "After implementing a task and reviewing the output, report whether it passed, " +
     "failed, or should be skipped. The loop will auto-advance on pass, " +
     "retry on fail (up to max), or escalate to user when retries exhausted.",
   args: {
     result: tool.schema
       .enum(["pass", "fail", "skip"])
       .describe(
-        "Task result: 'pass' (build+tests green), 'fail' (something broke), 'skip' (defer task)",
+        "Task result: 'pass' (implementation looks correct), 'fail' (something broke), 'skip' (defer task)",
       ),
     detail: tool.schema
       .string()
