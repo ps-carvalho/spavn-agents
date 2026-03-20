@@ -125,7 +125,7 @@ Use the **question tool** with these options:
 
 ### Step 6: REPL Implementation Loop
 
-Implement plan tasks iteratively using the REPL loop. Each task goes through a **Read → Eval → Print → Loop** cycle with per-task build+test verification.
+Implement plan tasks iteratively using the REPL loop. Each task goes through a **Read → Eval → Print → Loop** cycle. Build and test verification is deferred to the Quality Gate (Step 7) to avoid redundant builds during implementation.
 
 **Session recovery:** Run `repl_resume` first to check for an interrupted loop from a previous session. If found, it will show progress and the interrupted task — skip to 6b to continue.
 
@@ -175,17 +175,20 @@ Prepare context from `repl_status` output and launch worker(s) via the Task tool
    ```
 4. Wait for ALL workers to return, then review each summary before proceeding to 6d
 
-#### 6d: Verify — Build + Test
-Run the build command (from repl_status output) via bash.
-If build passes, run the test command via bash.
-You can scope tests to relevant files during the loop (e.g., `npx vitest run src/tools/repl.test.ts`).
+#### 6d: Verify — Code Review
+Review the worker output and changed files to verify correctness. No build or test commands during the loop — builds are deferred to the Quality Gate (Step 7b).
 
-**For parallel batches:** Run build + test ONCE after ALL batch workers return — not after each individual worker.
+**For parallel batches:** Review ALL batch workers' output before reporting.
+
+Check for:
+- Acceptance criteria satisfaction
+- Obvious logic errors or missing imports
+- Files that were supposed to be created/modified but weren't
 
 #### 6e: Report the Outcome
 Run `repl_report` for EACH task in the batch:
-- **pass** — build + tests green. Include a brief summary.
-- **fail** — something broke. Include the error message.
+- **pass** — implementation looks correct, ACs satisfied. Include a brief summary.
+- **fail** — obvious issues found in code review. Include the issue description.
 - **skip** — task should be deferred. Include the reason.
 
 **For parallel batches**, report each task with its `taskIndex`:
@@ -213,8 +216,6 @@ Based on the repl_report response:
 
 #### Loop Safeguards
 - **Max 3 retries per task** (configurable via repl_init)
-- **If build fails 3 times in a row on DIFFERENT tasks**, pause and ask user (likely a systemic issue)
-- **Always run build before tests** — don't waste time testing broken code
 - **For parallel batches:** If one task in a batch fails, the others in that batch still complete. Only the failed task is retried.
 
 ### Step 7: Quality Gate — Two-Phase Sub-Agent Review (MANDATORY)
@@ -223,7 +224,22 @@ Based on the repl_report response:
 Run `repl_summary` to get the loop results. Include this summary in the quality gate section of the PR body.
 If any tasks are marked "failed", list them explicitly in the PR body and consider whether they block the quality gate.
 
-**7b: Assess Change Scope**
+**7b: Build + Test Verification**
+Run the build and test commands before launching quality workers. This is the single point where builds happen — not during the REPL loop.
+
+1. Run the build command (from `repl_status` output or project defaults) via bash
+2. If build passes, run the test command via bash
+3. If build or tests fail:
+   - Launch a `coder` worker with the error output as context, asking it to fix the issue
+   - Re-run build + tests after the fix
+   - **Max 3 fix attempts** — if still failing after 3 attempts, use the question tool:
+     "Build/tests are still failing after 3 fix attempts. How would you like to proceed?"
+     Options:
+     1. **Let me fix it manually** — Pause for user intervention
+     2. **Proceed anyway** — Continue to quality gate with known failures (noted in PR body)
+     3. **Abort** — Stop the workflow
+
+**7c: Assess Change Scope**
 Before launching sub-agents, assess the scope of changes to avoid wasting tokens on trivial changes. Classify the changed files into one of four tiers:
 
 | Scope | Criteria | Workers to Launch (skill names) |
@@ -241,7 +257,7 @@ Use these signals to classify:
 
 **If scope is trivial**, skip the quality gate entirely and proceed to Step 8.
 
-**7c: Phase 1 — Parallel worker launch**
+**7d: Phase 1 — Parallel worker launch**
 After completing implementation and BEFORE documentation or finalization, launch workers for automated quality checks. **Use the Task tool to launch multiple workers in a SINGLE message for parallel execution.**
 
 **Based on scope, launch workers with these skills:**
@@ -271,7 +287,7 @@ After completing implementation and BEFORE documentation or finalization, launch
    - List of performance-sensitive files modified
    - Summary of algorithmic changes
 
-**7d: Phase 2 — Cross-worker context sharing**
+**7e: Phase 2 — Cross-worker context sharing**
 After Phase 1 workers return, feed their findings back for cross-worker reactions:
 
 - If **security** worker reported `CRITICAL` or `HIGH` findings, launch **testing** worker again with:
@@ -279,7 +295,7 @@ After Phase 1 workers return, feed their findings back for cross-worker reaction
   - Ask it to: write regression tests specifically for the security vulnerabilities found
 - If **security** findings affect **audit** quality score, note this in the quality gate summary
 
-**7e: Review Phase 1 + Phase 2 results:**
+**7f: Review Phase 1 + Phase 2 results:**
 
 - **testing results**: If any `[BLOCKING]` issues exist (tests revealing bugs), fix the implementation before proceeding. `[WARNING]` issues should be addressed if feasible.
 - **security results**: If `CRITICAL` or `HIGH` findings exist, fix them before proceeding. `MEDIUM` findings should be noted in the PR body. `LOW` findings can be deferred.
@@ -287,6 +303,17 @@ After Phase 1 workers return, feed their findings back for cross-worker reaction
 - **docs-writer results**: Review generated documentation for accuracy. Fix any issues.
 - **devops results**: If `ERROR` findings exist, fix them before proceeding.
 - **perf results**: If `CRITICAL` findings exist (performance regressions), fix before proceeding. `WARNING` findings noted in PR body.
+
+**Loop-back for CRITICAL findings:** If `testing` finds `[BLOCKING]` bugs or `security` finds `CRITICAL` vulnerabilities:
+1. Launch a `coder` worker with the finding details as context to fix the issue
+2. Re-run Build + Test Verification (7b)
+3. Re-run only the affected quality workers (e.g., re-run `testing` if tests were blocking, `security` if vulnerabilities were found)
+4. **Max 2 quality-gate fix iterations** — if still failing after 2 rounds, use the question tool:
+   "Quality gate is still failing after 2 fix iterations. How would you like to proceed?"
+   Options:
+   1. **Let me fix it manually** — Pause for user intervention
+   2. **Proceed with warnings** — Continue with findings noted in PR body
+   3. **Abort** — Stop the workflow
 
 **Include a quality gate summary in the PR body** when finalizing (Step 10):
 ```

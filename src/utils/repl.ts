@@ -16,11 +16,12 @@ import { SPAVN_DIR } from "./constants.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const REPL_STATE_FILE = "repl-state.json";
-const REPL_STATE_VERSION = 2;
+const REPL_STATE_VERSION = 3;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type TaskStatus = "pending" | "in_progress" | "passed" | "failed" | "skipped";
+export type BuildPhase = "developing" | "quality" | "done";
 
 export interface TaskIteration {
   /** ISO timestamp of this iteration */
@@ -90,6 +91,14 @@ export interface ReplState {
   activeTaskIndices?: number[];
   /** Computed batch groups for parallel execution */
   batches?: TaskBatch[];
+  /** Current build workflow phase */
+  buildPhase?: BuildPhase;
+  /** Skip build phase (go directly to quality gate) */
+  skipBuild?: boolean;
+  /** Total number of builds executed */
+  buildCount?: number;
+  /** Whether verification is pending after build */
+  pendingVerification?: boolean;
 }
 
 export interface SpavnConfig {
@@ -448,6 +457,15 @@ export function readReplState(cwd: string): ReplState | null {
       // activeTaskIndices and batches are optional — will be computed on next repl_init
     }
 
+    // Migrate from v2 to v3: add build phase tracking fields
+    if (raw.version === 2) {
+      raw.version = 3;
+      raw.buildPhase = "developing";
+      raw.skipBuild = false;
+      raw.buildCount = 0;
+      raw.pendingVerification = false;
+    }
+
     // Reject state from a newer version we don't understand
     if (raw.version > REPL_STATE_VERSION) {
       return null;
@@ -671,6 +689,18 @@ export function formatProgress(state: ReplState): string {
   lines.push(`Progress: ${progressBar(done, total)} ${done}/${total} tasks (${pct}%)`);
   lines.push(`  Passed: ${passed}  |  Failed: ${failed}  |  Skipped: ${skipped}  |  Pending: ${pending}`);
 
+  // Build phase info
+  const buildPhase = state.buildPhase ?? "developing";
+  const buildCount = state.buildCount ?? 0;
+  const pendingVerification = state.pendingVerification ?? false;
+  const skipBuild = state.skipBuild ?? false;
+
+  if (skipBuild) {
+    lines.push(`  Phase: ${buildPhase} (builds skipped)`);
+  } else {
+    lines.push(`  Phase: ${buildPhase}  |  Builds: ${buildCount}${pendingVerification ? " (pending verification)" : ""}`);
+  }
+
   // Batch info
   if (state.batches && state.batches.length > 0) {
     const completedBatches = state.batches.filter(b =>
@@ -834,6 +864,17 @@ export function formatSummary(state: ReplState): string {
     resultsLine += ` | **ACs: ${passedACs}/${totalACs} satisfied**`;
   }
   lines.push(resultsLine);
+
+  // Build statistics
+  const buildCount = state.buildCount ?? 0;
+  const pendingVerification = state.pendingVerification ?? false;
+  const buildPhase = state.buildPhase ?? "developing";
+  
+  if (state.skipBuild) {
+    lines.push(`Build Phase: skipped | Final phase: ${buildPhase}`);
+  } else if (buildCount > 0) {
+    lines.push(`Builds: ${buildCount} | Phase: ${buildPhase} | Pending verification: ${pendingVerification}`);
+  }
 
   // Timing
   if (state.startedAt) {

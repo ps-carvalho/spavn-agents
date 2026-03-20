@@ -18,6 +18,7 @@ import {
   type ReplState,
   type ReplTask,
   type TaskBatch,
+  type BuildPhase,
 } from "../../utils/repl.js";
 import { success, failure, type HandlerResult } from "./types.js";
 
@@ -38,10 +39,10 @@ export interface ReplReportResult extends HandlerResult {
  */
 export async function executeInit(
   worktree: string,
-  args: { planFilename: string; buildCommand?: string; testCommand?: string; maxRetries?: number },
+  args: { planFilename: string; buildCommand?: string; testCommand?: string; maxRetries?: number; skipBuild?: boolean },
 ): Promise<HandlerResult> {
   const config = readSpavnConfig(worktree);
-  const { planFilename, buildCommand, testCommand, maxRetries = config.maxRetries ?? 3 } = args;
+  const { planFilename, buildCommand, testCommand, maxRetries = config.maxRetries ?? 3, skipBuild = false } = args;
 
   const plansDir = path.join(worktree, SPAVN_DIR, PLANS_DIR);
   const planPath = path.resolve(plansDir, planFilename);
@@ -83,7 +84,7 @@ export async function executeInit(
   }
 
   const state: ReplState = {
-    version: 2,
+    version: 3,
     planFilename,
     startedAt: new Date().toISOString(),
     buildCommand: finalBuild,
@@ -94,6 +95,10 @@ export async function executeInit(
     activeTaskIndices: [],
     tasks,
     batches,
+    buildPhase: skipBuild ? "quality" : "developing",
+    skipBuild,
+    buildCount: 0,
+    pendingVerification: false,
   };
 
   writeReplState(worktree, state);
@@ -107,11 +112,15 @@ export async function executeInit(
     ? `\nBatches: ${batches.length} (first batch: ${batches[0].taskIndices.length} parallel task${batches[0].taskIndices.length > 1 ? "s" : ""})`
     : "";
 
+  const skipBuildInfo = skipBuild
+    ? "\n⚠ Build verification deferred — will verify after all tasks complete"
+    : "";
+
   return success(`\u2713 REPL loop initialized
 
 Plan: ${planFilename}
 Tasks: ${tasks.length}${batchInfo}
-Detection: ${cmdInfo}
+Detection: ${cmdInfo}${skipBuildInfo}
 
 Build: ${finalBuild || "(none)"}
 Test:  ${finalTest || "(none)"}
@@ -329,4 +338,49 @@ export function processReplReport(
     reportResult.interactionReason = interactionReason;
   }
   return reportResult;
+}
+
+/**
+ * Update build phase tracking fields in the REPL state.
+ * Used to coordinate the build workflow between implementation and quality gate phases.
+ */
+export function executeQualityCheck(
+  worktree: string,
+  args: {
+    phase?: BuildPhase;
+    incrementBuild?: boolean;
+    setPendingVerification?: boolean;
+    skipBuild?: boolean;
+  },
+): HandlerResult {
+  const state = readReplState(worktree);
+  if (!state) return success("✗ No REPL loop active. Run repl_init first.");
+
+  // Update build phase if provided
+  if (args.phase) {
+    state.buildPhase = args.phase;
+  }
+
+  // Increment build count if requested
+  if (args.incrementBuild) {
+    state.buildCount = (state.buildCount ?? 0) + 1;
+  }
+
+  // Set pending verification flag
+  if (args.setPendingVerification !== undefined) {
+    state.pendingVerification = args.setPendingVerification;
+  }
+
+  // Set skip build flag
+  if (args.skipBuild !== undefined) {
+    state.skipBuild = args.skipBuild;
+  }
+
+  writeReplState(worktree, state);
+
+  const phaseInfo = state.buildPhase ?? "developing";
+  const buildInfo = `Builds: ${state.buildCount ?? 0}`;
+  const verificationInfo = state.pendingVerification ? " | verification pending" : "";
+
+  return success(`✓ Build phase updated\n\nPhase: ${phaseInfo} | ${buildInfo}${verificationInfo}`);
 }

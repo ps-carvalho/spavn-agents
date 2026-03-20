@@ -1316,7 +1316,7 @@ describe("repl_init with dependencies", () => {
     expect(result).toContain("first batch: 1 parallel task)");
 
     const writtenState = mockWriteReplState.mock.calls[0][1];
-    expect(writtenState.version).toBe(2);
+    expect(writtenState.version).toBe(3);
     expect(writtenState.tasks[0].dependsOn).toEqual([]);
     expect(writtenState.tasks[1].dependsOn).toEqual([0]);
     expect(writtenState.batches).toHaveLength(2);

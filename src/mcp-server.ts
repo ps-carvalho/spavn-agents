@@ -558,6 +558,21 @@ export async function startMCPServer(): Promise<void> {
     },
   );
 
+  mcpServer.tool(
+    "repl_quality_check",
+    "Update build phase tracking in the REPL loop - phase transitions, build counts, and verification status",
+    {
+      phase: z.enum(["developing", "quality", "done"]).optional().describe("Set the current build phase"),
+      incrementBuild: z.boolean().optional().describe("Increment the build count"),
+      setPendingVerification: z.boolean().optional().describe("Set whether verification is pending"),
+      skipBuild: z.boolean().optional().describe("Set whether to skip the build phase"),
+    },
+    async (args) => {
+      const r = replHandlers.executeQualityCheck(worktree, args);
+      return ok(r.text);
+    },
+  );
+
   // ─── Quality gate tools ────────────────────────────────────────────────────
 
   mcpServer.tool(
