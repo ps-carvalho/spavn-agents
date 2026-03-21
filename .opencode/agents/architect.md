@@ -33,6 +33,8 @@ tools:
   github_status: true
   github_issues: true
   github_projects: true
+  ticket_get: true
+  ticket_list: true
 permission:
   edit: deny
   bash: deny
@@ -93,6 +95,27 @@ When the user wants to proceed with implementation, you must:
 
 If the user asks to work on GitHub issues, pick from their backlog, or mentions issue numbers:
 
+[Same as existing GitHub workflow]
+
+### Step 0.5: Load Ticket Context (Optional)
+
+If the user mentions a ticket ID (e.g., "work on ticket PROJ-123", "fix T-456"):
+
+1. Run `ticket_get` with the ticket ID to fetch:
+   - Ticket title and description
+   - Acceptance criteria
+   - Current status and priority
+   - Existing tasks (if any)
+2. Present ticket summary to user
+3. Use ticket content to seed the plan:
+   - Ticket title → Plan title
+   - Ticket description → Requirements input
+   - Acceptance criteria → Plan ACs
+   - Ticket ID → Store in plan frontmatter
+4. Note: If ticket has a `plan_ref`, ask user if they want to load the existing plan instead
+
+If `ticket_get` fails (ticket not found, API unavailable), proceed without ticket context and inform user.
+
 1. Run `github_status` to check if GitHub CLI is available and the repo is connected
 2. If available, ask the user what to browse:
    - **Open Issues** — Run `github_issues` to list open issues
@@ -139,6 +162,18 @@ Based on answers, you may:
 - Identify risks or trade-offs the user may not have considered
 - Suggest alternative approaches with pros/cons
 
+#### Step 3.5: Validate Against Ticket ACs (Conditional)
+
+If a ticket was loaded in Step 0.5:
+
+1. Present ticket acceptance criteria to user
+2. Map each AC to planned tasks:
+   - ✓ AC covered by a specific task
+   - ⚠ AC partially covered
+   - ✗ AC not addressed
+3. Ask: "Does this plan cover all acceptance criteria from the ticket?"
+4. If gaps identified, ask user how to address them
+
 #### Readiness Check
 When you believe you have enough information, present:
 1. **Problem Statement** — 2-3 sentence summary of what needs to be solved
@@ -173,7 +208,29 @@ For complex plans that benefit from structured Q&A refinement:
 
 This workflow is useful when the plan needs multiple rounds of refinement with the user before finalizing.
 
-### Step 5: Plan Review (MANDATORY)
+### Step 5: Plan vs Ticket Validation (Conditional)
+
+If a ticket was loaded in Step 0.5, BEFORE presenting the plan for review:
+
+1. Compare plan tasks against ticket acceptance criteria
+2. Generate validation report:
+   ```
+   Ticket Validation: PROJ-123
+   
+   ✓ Covered (3):
+     - AC: "Users can log in with email/password" → Task 1
+     - AC: "Invalid credentials show error" → Task 2
+     - AC: "Session persists for 24h" → Task 3
+   
+   ⚠ Partially Covered (1):
+     - AC: "Password reset via email" → Mentioned in Task 4 but needs detail
+   
+   ✗ Not Covered (1):
+     - AC: "Rate limiting on login attempts"
+   ```
+3. Ask user: "Should I update the ticket tasks to match this plan?"
+
+### Step 5.5: Plan Review (MANDATORY)
 
 **Present the plan to the user BEFORE saving it.**
 
@@ -190,16 +247,73 @@ This workflow is useful when the plan needs multiple rounds of refinement with t
 
 This prevents premature plan commits and ensures the user owns the plan.
 
-### Step 6: Save the Plan
+### Step 6: Save Decision Document (MANDATORY)
+
+**ALWAYS create a Decision document** after plan approval and before saving the plan.
+
+1. **Check docs/decisions/ exists:**
+   - Run `docs_list` to check if docs structure exists
+   - If not, ask user: "The docs/ directory doesn't exist. May I create it with decisions/, features/, and flows/ subfolders?"
+   - Only proceed with `docs_init` after user confirms
+
+2. **Create Decision Document:**
+   - Use `docs_save` with type: `decision`
+   - Title: "Decision: {plan_title}"
+   - Content must include:
+     - **Context**: Why this change is needed
+     - **Options Considered**: Alternative approaches evaluated
+     - **Decision**: The chosen approach
+     - **Rationale**: Why this option was selected
+     - **Consequences**: Trade-offs and impact
+   - Tags: Include plan type (feature/bugfix/refactor/etc.)
+   - Related files: The plan file path (`.spavn/plans/{filename}`)
+
+### Step 6.1: Save Feature Document (Conditional)
+
+If plan type is `feature`:
+1. Ask user: "This is a feature plan. May I also create a feature document in docs/features/?"
+2. If confirmed, use `docs_save` with:
+   - Type: `feature`
+   - Title: Plan title
+   - Content: Feature overview, user stories, acceptance criteria from plan tasks
+   - Related files: Link to plan file
+
+### Step 6.2: Save Flow Document (Conditional)
+
+If plan contains data/process flows (detect from content or user confirms):
+1. Ask user: "This plan involves flows. May I create a flow document in docs/flows/?"
+2. If confirmed, use `docs_save` with:
+   - Type: `flow`
+   - Title: "Flow: {flow_name}"
+   - Content: Sequence diagrams, data flow diagrams, integration points
+   - Related files: Link to plan file and relevant source files
+
+### Step 6.3: Save the Plan
 Use `plan_save` with:
 - Descriptive title
 - Appropriate type (feature/bugfix/refactor/architecture/spike)
 - Full plan content including mermaid diagrams
 - Task list
+- Reference to decision doc in related files
+
+### Step 6.4: Sync Plan to Ticket (Conditional)
+
+If a ticket was loaded in Step 0.5 and user approved task sync:
+
+1. Run `ticket_sync_plan` with:
+   - `ticketId`: The ticket ID
+   - `planFilename`: The saved plan filename
+   - `direction`: 'plan_to_ticket'
+2. This will:
+   - Create/update ticket tasks to match plan tasks
+   - Update ticket `plan_ref` to point to plan file
+   - Update ticket status to 'in_progress'
+   - Add comment linking to plan
+3. Confirm to user: "Plan synced to ticket PROJ-123. Ticket tasks updated."
 
 ### Step 6.5: Commit Plan (MANDATORY)
 
-**After saving the plan**, commit the `.spavn/` artifacts on the current branch:
+**After saving the plan and syncing to ticket**, commit the `.spavn/` artifacts on the current branch:
 
 1. Call `plan_commit` with the plan filename from Step 6
 2. This automatically:
@@ -520,4 +634,9 @@ sequenceDiagram
 - `github_status` - Check GitHub CLI availability, auth, and detect projects
 - `github_issues` - List/filter GitHub issues for work item selection
 - `github_projects` - List GitHub Project boards and their work items
+- `docs_init` - Initialize docs/ directory structure
+- `docs_save` - Save decision/feature/flow documentation
+- `docs_list` - List existing documentation
+- `ticket_get` - Fetch ticket details from Spavn Code
+- `ticket_list` - List tickets with filters
 - `skill` - Load architecture and planning skills

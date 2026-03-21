@@ -13,6 +13,7 @@ import * as github from "./tools/github";
 import * as repl from "./tools/repl";
 import * as qualityGate from "./tools/quality-gate";
 import * as engineTools from "./tools/engine";
+import * as ticket from "./tools/ticket";
 
 // ─── Agent Descriptions (for handover toasts) ───────────────────────────────
 
@@ -173,6 +174,36 @@ const TOOL_NOTIFICATIONS: Record<string, ToolNotificationConfig> = {
     errorMsg: (_, out) => out.substring(0, 100),
     successDuration: 5000,
   },
+  ticket_get: {
+    successTitle: "Ticket Loaded",
+    successMsg: (args) => `Ticket: ${args.ticketId}`,
+    errorTitle: "Ticket Load Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  ticket_list: {
+    successTitle: "Tickets Listed",
+    successMsg: () => "Ticket list retrieved",
+    errorTitle: "Ticket List Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  ticket_update: {
+    successTitle: "Ticket Updated",
+    successMsg: (args) => `Updated: ${args.ticketId}`,
+    errorTitle: "Ticket Update Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  ticket_sync_plan: {
+    successTitle: "Plan Synced",
+    successMsg: (args) => `Synced with ${args.ticketId}`,
+    errorTitle: "Plan Sync Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
+  ticket_update_task: {
+    successTitle: "Task Updated",
+    successMsg: (args) => `Status: ${args.status}`,
+    errorTitle: "Task Update Failed",
+    errorMsg: (_, out) => out.substring(0, 100),
+  },
 };
 
 // ─── Error Message Extraction ────────────────────────────────────────────────
@@ -271,6 +302,13 @@ export const SpavnPlugin: Plugin = async (ctx) => {
       // Engine-backed tools
       spavn_get_skill: engineTools.getSkill,
       spavn_list_agents: engineTools.listAgents,
+
+      // Ticket integration tools
+      ticket_get: ticket.get,
+      ticket_list: ticket.list,
+      ticket_update: ticket.update,
+      ticket_sync_plan: ticket.syncPlan,
+      ticket_update_task: ticket.updateTask,
     },
 
     // ── Post-execution toast notifications ────────────────────────────────

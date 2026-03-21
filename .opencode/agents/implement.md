@@ -36,6 +36,10 @@ tools:
   repl_resume: true
   repl_summary: true
   quality_gate_summary: true
+  ticket_get: true
+  ticket_update: true
+  ticket_sync_plan: true
+  ticket_update_task: true
 permission:
   edit: allow
   bash:
@@ -85,6 +89,11 @@ If `./opencode.json` does not have agent model configuration, offer to configure
 ### Step 3: Check for Existing Plan
 Run `plan_list` to see if there's a relevant plan for this work.
 If a plan exists, load it with `plan_load`.
+
+**Check for linked ticket:** If the loaded plan has a `ticket` field in frontmatter:
+1. Run `ticket_get` to load ticket context
+2. Note the current ticket status and tasks
+3. During implementation, update ticket task status to track progress
 
 **Suggested branch detection:** If the loaded plan has a `branch` field in its frontmatter (set by `plan_commit`), this is the **suggested branch name** for implementation. The branch may or may not exist yet — `plan_commit` only writes the suggestion, it does not create the branch.
 
@@ -191,6 +200,11 @@ Run `repl_report` for EACH task in the batch:
 - **fail** — obvious issues found in code review. Include the issue description.
 - **skip** — task should be deferred. Include the reason.
 
+**Ticket Sync (Conditional):** If a ticket was loaded in Step 3:
+- On **pass**: Run `ticket_update_task` to mark the corresponding ticket task as `completed`
+- On **fail**: Add a comment to the ticket via `ticket_update` with failure details
+- Include the task result in the comment for tracking
+
 **For parallel batches**, report each task with its `taskIndex`:
 ```
 repl_report(result="pass", detail="...", taskIndex=0)
@@ -213,6 +227,10 @@ Based on the repl_report response:
   2. **Skip this task** — Mark as skipped, continue with next batch
   3. **Abort the loop** — Stop implementation, proceed to quality gate with partial results
 - **"All tasks complete"** → Exit loop, proceed to Step 7
+
+**Update Ticket Status on Complete:** If all tasks completed and a ticket is linked:
+- Run `ticket_update` to set ticket status to `review`
+- Add comment summarizing completed work
 
 #### Loop Safeguards
 - **Max 3 retries per task** (configurable via repl_init)
@@ -327,6 +345,11 @@ After Phase 1 workers return, feed their findings back for cross-worker reaction
 ```
 
 Proceed to Step 8 only when the quality gate passes.
+
+**Ticket Quality Gate Integration:** If a ticket is linked:
+- Add quality gate summary as a comment to the ticket
+- If GO: Update ticket status to `review` (if not already)
+- If NO-GO: Update ticket with blocker details, keep status as `in_progress`
 
 ### Step 8: Documentation Review (MANDATORY)
 
@@ -464,6 +487,10 @@ Load **multiple skills** if the task spans domains (e.g., fullstack feature → 
 - `repl_resume` - Detect and resume an interrupted REPL loop from a previous session
 - `repl_summary` - Generate markdown results table for PR body inclusion
 - `quality_gate_summary` - Aggregate sub-agent findings into unified report with go/no-go recommendation
+- `ticket_get` - Load ticket context if plan has linked ticket
+- `ticket_update` - Update ticket status or add comments
+- `ticket_sync_plan` - Sync plan with ticket tasks
+- `ticket_update_task` - Update individual task status during REPL loop
 - `skill` - Load relevant skills for complex tasks
 
 ## Worker Orchestration
